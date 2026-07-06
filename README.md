@@ -26,6 +26,49 @@ The bucketing rules match the old app:
 - send active, near-expiration licenses with no completed CE credits
 - do not send if any CE credits are already present
 
+## Input And Output Files
+
+By default, all input and output files live in a `Files` folder under the project root:
+
+```text
+license-status-checker/
+  Files/
+    ListToCheck.xlsx
+    Send-{date}.xlsx
+    DoNotSend-{date}.xlsx
+    coursesAlreadyTaken.xlsx
+    expired.txt
+    greaterThan90.txt
+    exception.txt
+```
+
+The input workbook must be named `ListToCheck.xlsx` unless you pass a custom `--input` path. The default input path is:
+
+```text
+Files/ListToCheck.xlsx
+```
+
+The app reads every worksheet in that workbook and expects the Washington L&I export-style columns:
+
+```text
+License Type, License Number, Name, Address1, Address2, City, State, Zip, ExpirationDate
+```
+
+Generated output files are written to the output directory. By default, that is also `Files/`. You can change it with `--out-dir`.
+
+- `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits.
+- `DoNotSend-{date}.xlsx`: license holders who should not be contacted, with a reason when available.
+- `coursesAlreadyTaken.xlsx`: course title/code frequency report from licenses that already show completed CE credits.
+- `expired.txt`: spreadsheet rows skipped before browser checks because the input expiration date is already past.
+- `greaterThan90.txt`: spreadsheet rows skipped before browser checks because the input expiration date is more than 90 days away.
+- `exception.txt`: spreadsheet parsing errors and Playwright/browser errors encountered during the run.
+
+Example with explicit paths:
+
+```bash
+npm start -- --input ./Files/ListToCheck.xlsx --out-dir ./Files
+```
+
 ## Setup
 
 ```bash
