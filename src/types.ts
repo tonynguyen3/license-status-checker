@@ -32,6 +32,7 @@ export interface CheckerOptions {
   slowMo: number;
   limit?: number;
   onProgress?: ProgressReporter;
+  isCanceled?: () => boolean;
 }
 
 export interface OutputPaths {

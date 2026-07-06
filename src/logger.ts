@@ -36,6 +36,5 @@ export class Logger {
     ].join("\n");
 
     await appendFile(path, entry, "utf8");
-    this.onProgress?.({ type: "log", message, files: { log: path } });
   }
 }

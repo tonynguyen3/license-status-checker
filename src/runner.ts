@@ -14,6 +14,7 @@ export interface RunOptions {
   slowMo: number;
   limit?: number;
   onProgress?: ProgressReporter;
+  isCanceled?: () => boolean;
 }
 
 export interface RunResult {
@@ -21,6 +22,7 @@ export interface RunResult {
   doNotSendCount: number;
   courseFrequencyCount: number;
   outputPaths: OutputPaths;
+  canceled: boolean;
 }
 
 export async function runWashingtonCheck(options: RunOptions): Promise<RunResult> {
@@ -41,7 +43,8 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
     headed: options.headed,
     slowMo: options.slowMo,
     limit: options.limit,
-    onProgress: options.onProgress
+    onProgress: options.onProgress,
+    isCanceled: options.isCanceled
   });
 
   const result = await checker.checkLicenses(tradesmen);
@@ -71,7 +74,8 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
     sendCount: result.send.length,
     doNotSendCount: result.doNotSend.length,
     courseFrequencyCount: result.courseFrequencies.length,
-    outputPaths
+    outputPaths,
+    canceled: result.canceled
   };
 }
 

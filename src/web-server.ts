@@ -20,10 +20,11 @@ interface UploadedWorkbook {
 
 interface WebRun {
   id: string;
-  status: "running" | "complete" | "error";
+  status: "running" | "complete" | "canceled" | "error";
   outputDir: string;
   events: ProgressUpdate[];
   clients: Set<ServerResponse>;
+  cancelRequested: boolean;
   outputPaths?: OutputPaths;
   error?: string;
 }
@@ -44,6 +45,12 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/run") {
       await handleRun(request, response);
+      return;
+    }
+
+    const cancelMatch = url.pathname.match(/^\/runs\/([^/]+)\/cancel$/);
+    if (request.method === "POST" && cancelMatch) {
+      handleCancel(cancelMatch[1], response);
       return;
     }
 
@@ -124,7 +131,8 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     status: "running",
     outputDir,
     events: [],
-    clients: new Set()
+    clients: new Set(),
+    cancelRequested: false
   };
   runs.set(runId, run);
 
@@ -135,14 +143,15 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     headed: body.headed === true,
     slowMo: 0,
     limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined,
-    onProgress: (update) => emit(run, update)
+    onProgress: (update) => emit(run, update),
+    isCanceled: () => run.cancelRequested
   })
     .then((result) => {
-      run.status = "complete";
+      run.status = result.canceled ? "canceled" : "complete";
       run.outputPaths = result.outputPaths;
       emit(run, {
-        type: "run_complete",
-        message: "Run complete. Output files are ready.",
+        type: result.canceled ? "run_canceled" : "run_complete",
+        message: result.canceled ? "Run stopped. Partial output files are ready." : "Run complete. Output files are ready.",
         files: fileLinks(run.id, result.outputPaths)
       });
       closeClients(run);
@@ -155,6 +164,26 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     });
 
   sendJson(response, 200, { runId });
+}
+
+function handleCancel(runId: string, response: ServerResponse): void {
+  const run = runs.get(runId);
+  if (!run) {
+    sendJson(response, 404, { error: "Run not found" });
+    return;
+  }
+
+  if (run.status !== "running") {
+    sendJson(response, 200, { status: run.status });
+    return;
+  }
+
+  run.cancelRequested = true;
+  emit(run, {
+    type: "cancel_requested",
+    message: "Stop requested. The current website check will finish, then the run will stop before the next license."
+  });
+  sendJson(response, 200, { status: "cancel_requested" });
 }
 
 function handleEvents(runId: string, response: ServerResponse): void {
@@ -321,6 +350,7 @@ function pageHtml(): string {
     input, select { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:14px; background:#fff; }
     input[type="checkbox"] { width:auto; min-height:auto; }
     button { min-height:38px; border:0; border-radius:6px; padding:8px 12px; font-size:14px; font-weight:700; background:var(--accent); color:#fff; cursor:pointer; }
+    button.danger { background:#b3261e; }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; }
     .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px; }
@@ -370,6 +400,7 @@ function pageHtml(): string {
         </div>
         <label class="row"><input id="headed" type="checkbox"> Show browser window</label>
         <button id="run" disabled>Run Check</button>
+        <button id="stop" class="danger" disabled>Stop Run</button>
       </div>
     </aside>
     <section>
@@ -385,10 +416,12 @@ function pageHtml(): string {
     </section>
   </main>
   <script>
-    const state = { uploadId: null, eventSource: null, isRunning: false };
+    const state = { uploadId: null, eventSource: null, isRunning: false, currentRunId: null, stopRequested: false };
+    const maxFeedLines = 500;
     const fileInput = document.getElementById("file");
     const uploadButton = document.getElementById("upload");
     const runButton = document.getElementById("run");
+    const stopButton = document.getElementById("stop");
     const worksheet = document.getElementById("worksheet");
     const limit = document.getElementById("limit");
     const headed = document.getElementById("headed");
@@ -431,6 +464,8 @@ function pageHtml(): string {
       files.innerHTML = "";
       bar.style.width = "0%";
       state.isRunning = true;
+      state.currentRunId = null;
+      state.stopRequested = false;
       setBusy(true);
       const response = await fetch("/run", {
         method: "POST",
@@ -444,11 +479,30 @@ function pageHtml(): string {
       });
       const payload = await response.json();
       if (!response.ok) {
+        state.isRunning = false;
+        state.stopRequested = false;
         setBusy(false);
         return setStatus(payload.error || "Run failed to start.");
       }
+      state.currentRunId = payload.runId;
       connect(payload.runId);
       setStatus("Run started.");
+    });
+
+    stopButton.addEventListener("click", async () => {
+      if (!state.currentRunId || state.stopRequested) return;
+      state.stopRequested = true;
+      stopButton.disabled = true;
+      append("Stop requested. Waiting for the current website check to finish.");
+      const response = await fetch("/runs/" + state.currentRunId + "/cancel", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) {
+        append(payload.error || "Stop request failed.");
+        state.stopRequested = false;
+        stopButton.disabled = false;
+        return;
+      }
+      setStatus("Stop requested.");
     });
 
     function connect(runId) {
@@ -466,21 +520,29 @@ function pageHtml(): string {
         } else {
           progressMeta.textContent = update.message;
         }
-        if (update.files && update.type === "run_complete") {
+        if (update.files && (update.type === "run_complete" || update.type === "run_canceled")) {
           renderFiles(update.files);
           state.isRunning = false;
+          state.currentRunId = null;
+          state.stopRequested = false;
           setBusy(false);
-          setStatus("Run complete.");
+          setStatus(update.type === "run_canceled" ? "Run stopped." : "Run complete.");
         }
         if (update.type === "run_error") {
           state.isRunning = false;
+          state.currentRunId = null;
+          state.stopRequested = false;
           setBusy(false);
           setStatus(update.message);
         }
       };
       state.eventSource.onerror = () => {
         state.isRunning = false;
-        if (status.textContent !== "Run complete.") setStatus("Progress connection closed.");
+        state.currentRunId = null;
+        state.stopRequested = false;
+        if (status.textContent !== "Run complete." && status.textContent !== "Run stopped.") {
+          setStatus("Progress connection closed.");
+        }
         setBusy(false);
       };
     }
@@ -513,6 +575,9 @@ function pageHtml(): string {
       const line = document.createElement("div");
       line.textContent = new Date().toLocaleTimeString() + "  " + message;
       feed.appendChild(line);
+      while (feed.children.length > maxFeedLines) {
+        feed.removeChild(feed.firstElementChild);
+      }
       if (state.isRunning && autoScroll.checked) {
         feed.scrollTop = feed.scrollHeight;
       }
@@ -521,6 +586,7 @@ function pageHtml(): string {
     function setBusy(isBusy) {
       uploadButton.disabled = isBusy;
       runButton.disabled = isBusy || !state.uploadId;
+      stopButton.disabled = !state.isRunning || state.stopRequested;
     }
 
     function setStatus(message) {

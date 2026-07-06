@@ -8,6 +8,7 @@ interface CheckRunResult {
   send: Tradesman[];
   doNotSend: Tradesman[];
   courseFrequencies: CourseFrequency[];
+  canceled: boolean;
 }
 
 export class WashingtonLicenseChecker {
@@ -20,6 +21,23 @@ export class WashingtonLicenseChecker {
   ) {}
 
   async checkLicenses(tradesmen: Tradesman[]): Promise<CheckRunResult> {
+    const limitedTradesmen = this.options.limit ? tradesmen.slice(0, this.options.limit) : tradesmen;
+    if (this.options.isCanceled?.()) {
+      this.options.onProgress?.({
+        type: "checks_canceled",
+        message: "Run was stopped before website checks started.",
+        current: 0,
+        total: limitedTradesmen.length,
+        remaining: limitedTradesmen.length
+      });
+      return {
+        send: [],
+        doNotSend: [],
+        courseFrequencies: [],
+        canceled: true
+      };
+    }
+
     const browser = await chromium.launch({
       headless: !this.options.headed,
       slowMo: this.options.slowMo
@@ -27,9 +45,12 @@ export class WashingtonLicenseChecker {
 
     try {
       const page = await browser.newPage();
-      const limitedTradesmen = this.options.limit ? tradesmen.slice(0, this.options.limit) : tradesmen;
       const results: BucketedResult[] = [];
       const total = limitedTradesmen.length;
+      let sendCount = 0;
+      let doNotSendCount = 0;
+      let errorCount = 0;
+      let canceled = false;
 
       this.options.onProgress?.({
         type: "checks_started",
@@ -40,55 +61,60 @@ export class WashingtonLicenseChecker {
       });
 
       for (let index = 0; index < limitedTradesmen.length; index++) {
+        if (this.options.isCanceled?.()) {
+          canceled = true;
+          this.options.onProgress?.({
+            type: "checks_canceled",
+            message: `Run stopped after ${index} of ${total} website check(s). Partial output files will be written.`,
+            current: index,
+            total,
+            remaining: total - index
+          });
+          break;
+        }
+
         const tradesman = limitedTradesmen[index];
         const current = index + 1;
-        this.options.onProgress?.({
-          type: "checking_license",
-          message: `Checking ${tradesman.licenseNumber} (${current} of ${total}).`,
-          current,
-          total,
-          remaining: total - current,
-          licenseNumber: tradesman.licenseNumber
-        });
 
         try {
           const result = await this.checkSingleLicense(page, tradesman);
           results.push(result);
-          this.options.onProgress?.({
-            type: "license_checked",
-            message: `Finished ${tradesman.licenseNumber}: ${result.bucket === "send" ? "Send" : "DoNotSend"}.`,
-            current,
-            total,
-            remaining: total - current,
-            licenseNumber: tradesman.licenseNumber
-          });
+          if (result.bucket === "send") {
+            sendCount++;
+          } else {
+            doNotSendCount++;
+          }
         } catch (error) {
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
           console.log(`There was an error with ${tradesman.licenseNumber}.`);
           await this.logger.writeErrorsToLog(`${message}\nThere was a Playwright error.`, this.outputPaths.exceptionLogPath);
+          errorCount++;
+        }
+
+        if (current === total || current % 50 === 0) {
           this.options.onProgress?.({
-            type: "license_error",
-            message: `There was an error with ${tradesman.licenseNumber}.`,
+            type: "checks_progress",
+            message: `Checked ${current} of ${total} license(s). Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
             current,
             total,
-            remaining: total - current,
-            licenseNumber: tradesman.licenseNumber
+            remaining: total - current
           });
         }
       }
 
       this.options.onProgress?.({
-        type: "checks_complete",
-        message: `Finished ${total} website check(s).`,
-        current: total,
+        type: canceled ? "checks_canceled" : "checks_complete",
+        message: canceled ? "Website checks stopped by request." : `Finished ${total} website check(s).`,
+        current: canceled ? sendCount + doNotSendCount + errorCount : total,
         total,
-        remaining: 0
+        remaining: canceled ? total - sendCount - doNotSendCount - errorCount : 0
       });
 
       return {
         send: results.filter((result) => result.bucket === "send").map((result) => result.tradesman),
         doNotSend: results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman),
-        courseFrequencies: [...this.courseCounts.values()]
+        courseFrequencies: [...this.courseCounts.values()],
+        canceled
       };
     } finally {
       await closeBrowser(browser);

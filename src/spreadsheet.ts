@@ -43,6 +43,7 @@ export async function readWashingtonSpreadsheet(
   const tradesmen: Tradesman[] = [];
   let errorCount = 0;
   let rowsRead = 0;
+  let eligibleCount = 0;
 
   if (options.worksheetName) {
     logger.writeToConsole(`Only reading worksheet "${options.worksheetName}".`);
@@ -55,12 +56,23 @@ export async function readWashingtonSpreadsheet(
   });
 
   for (const worksheet of worksheets) {
+    options.onProgress?.({
+      type: "worksheet_started",
+      message: `Reading worksheet "${worksheet.name}" (${Math.max(0, worksheet.rowCount - 1)} data row(s)).`,
+      current: rowsRead,
+      total: rowTotal,
+      remaining: Math.max(0, rowTotal - rowsRead)
+    });
+
+    const worksheetStartEligible = eligibleCount;
+    const worksheetStartErrors = errorCount;
+
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
       rowsRead++;
-      if (rowsRead === 1 || rowsRead === rowTotal || rowsRead % 500 === 0) {
+      if (rowsRead === 1 || rowsRead === rowTotal || rowsRead % 100 === 0) {
         options.onProgress?.({
           type: "spreadsheet_row",
-          message: `Reading spreadsheet row ${rowsRead} of ${rowTotal}.`,
+          message: `Read ${rowsRead} of ${rowTotal} spreadsheet row(s). Eligible so far: ${eligibleCount}. Skipped/logged so far: ${errorCount}.`,
           current: rowsRead,
           total: rowTotal,
           remaining: Math.max(0, rowTotal - rowsRead)
@@ -127,7 +139,16 @@ export async function readWashingtonSpreadsheet(
         zip: asText(row.getCell(8).value),
         expirationDate
       });
+      eligibleCount++;
     }
+
+    options.onProgress?.({
+      type: "worksheet_complete",
+      message: `Finished worksheet "${worksheet.name}". Eligible: ${eligibleCount - worksheetStartEligible}. Skipped/logged: ${errorCount - worksheetStartErrors}.`,
+      current: rowsRead,
+      total: rowTotal,
+      remaining: Math.max(0, rowTotal - rowsRead)
+    });
   }
 
   logger.writeToConsole(
