@@ -48,7 +48,23 @@ The input workbook must be named `ListToCheck.xlsx` unless you pass a custom `--
 Files/ListToCheck.xlsx
 ```
 
-The app reads every worksheet in that workbook and expects the Washington L&I export-style columns:
+By default, the app reads every worksheet in that workbook. To read only one worksheet, pass `--worksheet` with the sheet name:
+
+```bash
+npm start -- --worksheet Electricians
+npm start -- --worksheet Plumbers
+npm start -- --worksheet "Plumber Trainees"
+npm start -- --worksheet "Electrical Trainees"
+```
+
+Supported worksheet names:
+
+- `Plumbers`
+- `Plumber Trainees`
+- `Electricians`
+- `Electrical Trainees`
+
+Each worksheet must use the Washington L&I export-style columns:
 
 ```text
 License Type, License Number, Name, Address1, Address2, City, State, Zip, ExpirationDate
@@ -94,11 +110,30 @@ Useful options:
 
 ```bash
 npm start -- --input /path/to/ListToCheck.xlsx --out-dir /path/to/Files
+npm start -- --worksheet Electricians
+npm start -- --worksheet "Plumber Trainees" --limit 5
+npm start -- --worksheet "Electrical Trainees" --limit 5
 npm start -- --headed
 npm start -- --limit 10 --headed --slow-mo 100
 ```
 
 `--headed` opens the browser visibly, which is helpful while validating selectors against the state website.
+
+## Web Interface
+
+Start the local web interface:
+
+```bash
+npm run web
+```
+
+Then open:
+
+```text
+http://localhost:3000
+```
+
+The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
 
 ## Verify
 

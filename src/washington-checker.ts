@@ -29,17 +29,61 @@ export class WashingtonLicenseChecker {
       const page = await browser.newPage();
       const limitedTradesmen = this.options.limit ? tradesmen.slice(0, this.options.limit) : tradesmen;
       const results: BucketedResult[] = [];
+      const total = limitedTradesmen.length;
 
-      for (const tradesman of limitedTradesmen) {
+      this.options.onProgress?.({
+        type: "checks_started",
+        message: `Starting ${total} website check(s).`,
+        current: 0,
+        total,
+        remaining: total
+      });
+
+      for (let index = 0; index < limitedTradesmen.length; index++) {
+        const tradesman = limitedTradesmen[index];
+        const current = index + 1;
+        this.options.onProgress?.({
+          type: "checking_license",
+          message: `Checking ${tradesman.licenseNumber} (${current} of ${total}).`,
+          current,
+          total,
+          remaining: total - current,
+          licenseNumber: tradesman.licenseNumber
+        });
+
         try {
           const result = await this.checkSingleLicense(page, tradesman);
           results.push(result);
+          this.options.onProgress?.({
+            type: "license_checked",
+            message: `Finished ${tradesman.licenseNumber}: ${result.bucket === "send" ? "Send" : "DoNotSend"}.`,
+            current,
+            total,
+            remaining: total - current,
+            licenseNumber: tradesman.licenseNumber
+          });
         } catch (error) {
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
           console.log(`There was an error with ${tradesman.licenseNumber}.`);
           await this.logger.writeErrorsToLog(`${message}\nThere was a Playwright error.`, this.outputPaths.exceptionLogPath);
+          this.options.onProgress?.({
+            type: "license_error",
+            message: `There was an error with ${tradesman.licenseNumber}.`,
+            current,
+            total,
+            remaining: total - current,
+            licenseNumber: tradesman.licenseNumber
+          });
         }
       }
+
+      this.options.onProgress?.({
+        type: "checks_complete",
+        message: `Finished ${total} website check(s).`,
+        current: total,
+        total,
+        remaining: 0
+      });
 
       return {
         send: results.filter((result) => result.bucket === "send").map((result) => result.tradesman),
@@ -105,8 +149,17 @@ export class WashingtonLicenseChecker {
       return { days: -1, date: new Date(0) };
     }
 
-    const expirationText = await page.locator("#ExpirationDate").innerText({ timeout: 10_000 });
-    const expirationDate = new Date(expirationText.trim());
+    const expirationElement = page.locator("#ExpirationDate");
+    await expirationElement.waitFor({ state: "attached", timeout: 10_000 });
+
+    let expirationText = "";
+    for (let attempt = 0; attempt < 20; attempt++) {
+      expirationText = (await expirationElement.textContent())?.trim() ?? "";
+      if (expirationText) break;
+      await page.waitForTimeout(250);
+    }
+
+    const expirationDate = new Date(expirationText);
     if (Number.isNaN(expirationDate.getTime())) {
       throw new Error(`Could not parse expiration date: ${expirationText}`);
     }

@@ -3,19 +3,25 @@ import { dirname } from "node:path";
 import ExcelJS from "exceljs";
 import { daysUntil } from "./date-utils.js";
 import { Logger } from "./logger.js";
-import type { CourseFrequency, OutputPaths, Tradesman } from "./types.js";
+import type { CourseFrequency, OutputPaths, ProgressReporter, Tradesman } from "./types.js";
 
 type CellValue = ExcelJS.CellValue | undefined;
 
-function asText(value: CellValue): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "object" && "text" in value) return String(value.text).trim();
-  if (typeof value === "object" && "result" in value) return asText(value.result);
-  return String(value).trim();
+interface ReadSpreadsheetOptions {
+  worksheetName?: string;
+  onProgress?: ProgressReporter;
 }
 
-function parseDate(value: string | undefined): Date | undefined {
+export function asText(value: CellValue): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value instanceof Date) return value.toLocaleDateString();
+  if (typeof value === "object" && "text" in value) return String(value.text).trim();
+  if (typeof value === "object" && "result" in value) return asText(value.result);
+  const text = String(value).trim();
+  return text.length > 0 ? text : undefined;
+}
+
+export function parseDate(value: string | undefined): Date | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
@@ -24,26 +30,57 @@ function parseDate(value: string | undefined): Date | undefined {
 export async function readWashingtonSpreadsheet(
   inputPath: string,
   logger: Logger,
-  outputPaths: OutputPaths
+  outputPaths: OutputPaths,
+  options: ReadSpreadsheetOptions = {}
 ): Promise<Tradesman[]> {
   logger.writeToConsole("The program is now reading the spreadsheet.\n-----");
+  options.onProgress?.({ type: "spreadsheet_loading", message: "Loading the input spreadsheet." });
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(inputPath);
+  const worksheets = selectWorksheets(workbook, options.worksheetName);
+  const rowTotal = worksheets.reduce((total, worksheet) => total + Math.max(0, worksheet.rowCount - 1), 0);
   const tradesmen: Tradesman[] = [];
   let errorCount = 0;
+  let rowsRead = 0;
 
-  for (const worksheet of workbook.worksheets) {
+  if (options.worksheetName) {
+    logger.writeToConsole(`Only reading worksheet "${options.worksheetName}".`);
+  }
+
+  options.onProgress?.({
+    type: "spreadsheet_loaded",
+    message: `Loaded ${worksheets.length} worksheet(s) with ${rowTotal} data row(s).`,
+    total: rowTotal
+  });
+
+  for (const worksheet of worksheets) {
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      rowsRead++;
+      if (rowsRead === 1 || rowsRead === rowTotal || rowsRead % 500 === 0) {
+        options.onProgress?.({
+          type: "spreadsheet_row",
+          message: `Reading spreadsheet row ${rowsRead} of ${rowTotal}.`,
+          current: rowsRead,
+          total: rowTotal,
+          remaining: Math.max(0, rowTotal - rowsRead)
+        });
+      }
+
       const row = worksheet.getRow(rowNumber);
-      if (!row.hasValues) continue;
+      const rowLocation = `${worksheet.name}!${rowNumber}`;
+      if (!row.hasValues) {
+        await logger.writeErrorsToLog(`Skipped ${rowLocation}: row has no values.`, outputPaths.exceptionLogPath);
+        errorCount++;
+        continue;
+      }
 
       const licenseNumber = asText(row.getCell(2).value);
       const expirationDate = asText(row.getCell(9).value);
 
       if (!licenseNumber || !expirationDate) {
         await logger.writeErrorsToLog(
-          "This tradesman has either no license number or no expiration date.",
+          `Skipped ${rowLocation}: this tradesman has either no license number or no expiration date.`,
           outputPaths.exceptionLogPath
         );
         errorCount++;
@@ -53,7 +90,7 @@ export async function readWashingtonSpreadsheet(
       const parsedExpiration = parseDate(expirationDate);
       if (!parsedExpiration) {
         await logger.writeErrorsToLog(
-          `${licenseNumber}'s expiration date could not be parsed: ${expirationDate}`,
+          `Skipped ${rowLocation} (${licenseNumber}): expiration date could not be parsed: ${expirationDate}`,
           outputPaths.exceptionLogPath
         );
         errorCount++;
@@ -63,7 +100,7 @@ export async function readWashingtonSpreadsheet(
       const daysTillExpiration = daysUntil(parsedExpiration);
       if (daysTillExpiration > 90) {
         await logger.writeErrorsToLog(
-          `${licenseNumber}'s expiration date is greater than 90.`,
+          `Skipped ${rowLocation} (${licenseNumber}): expiration date is greater than 90 days away.`,
           outputPaths.greaterThan90LogPath
         );
         errorCount++;
@@ -72,7 +109,7 @@ export async function readWashingtonSpreadsheet(
 
       if (daysTillExpiration < 0) {
         await logger.writeErrorsToLog(
-          `${licenseNumber}'s expiration date is in the past.`,
+          `Skipped ${rowLocation} (${licenseNumber}): expiration date is in the past.`,
           outputPaths.expiredLogPath
         );
         errorCount++;
@@ -96,8 +133,27 @@ export async function readWashingtonSpreadsheet(
   logger.writeToConsole(
     `The program has finished reading the spreadsheet.\nThere were ${errorCount} error(s), recorded in the logs.\nIt will now check ${tradesmen.length} license(s).\n-----`
   );
+  options.onProgress?.({
+    type: "spreadsheet_complete",
+    message: `Spreadsheet read complete. ${tradesmen.length} license(s) are eligible for website checks.`,
+    total: tradesmen.length
+  });
 
   return tradesmen;
+}
+
+function selectWorksheets(workbook: ExcelJS.Workbook, worksheetName?: string): ExcelJS.Worksheet[] {
+  if (!worksheetName) return workbook.worksheets;
+
+  const normalizedName = worksheetName.trim().toLowerCase();
+  const worksheet = workbook.worksheets.find((sheet) => sheet.name.trim().toLowerCase() === normalizedName);
+
+  if (!worksheet) {
+    const availableSheets = workbook.worksheets.map((sheet) => `"${sheet.name}"`).join(", ");
+    throw new Error(`Worksheet "${worksheetName}" was not found. Available worksheets: ${availableSheets}`);
+  }
+
+  return [worksheet];
 }
 
 function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number | undefined>[] {

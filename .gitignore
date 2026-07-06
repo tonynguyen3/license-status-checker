@@ -1,5 +1,9 @@
+.DS_Store
 node_modules/
 dist/
+Files/ListToCheck.xlsx
+Files/web-runs/
+Files/~$*.xlsx
 Files/Send-*.xlsx
 Files/DoNotSend-*.xlsx
 Files/coursesAlreadyTaken.xlsx

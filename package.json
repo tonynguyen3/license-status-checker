@@ -6,6 +6,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "start": "tsx src/main.ts",
+    "web": "tsx src/web-server.ts",
     "test": "vitest run",
     "install:browsers": "playwright install"
   },

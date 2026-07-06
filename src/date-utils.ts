@@ -4,5 +4,11 @@ export function formattedDate(date = new Date()): string {
 
 export function daysUntil(expirationDate: Date, today = new Date()): number {
   const oneDayMs = 24 * 60 * 60 * 1000;
-  return Math.floor((expirationDate.getTime() - today.getTime()) / oneDayMs);
+  const expirationUtc = Date.UTC(
+    expirationDate.getFullYear(),
+    expirationDate.getMonth(),
+    expirationDate.getDate()
+  );
+  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.floor((expirationUtc - todayUtc) / oneDayMs);
 }

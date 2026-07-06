@@ -31,6 +31,7 @@ export interface CheckerOptions {
   headed: boolean;
   slowMo: number;
   limit?: number;
+  onProgress?: ProgressReporter;
 }
 
 export interface OutputPaths {
@@ -41,3 +42,15 @@ export interface OutputPaths {
   greaterThan90LogPath: string;
   exceptionLogPath: string;
 }
+
+export interface ProgressUpdate {
+  type: string;
+  message: string;
+  current?: number;
+  total?: number;
+  remaining?: number;
+  licenseNumber?: string;
+  files?: Record<string, string>;
+}
+
+export type ProgressReporter = (update: ProgressUpdate) => void;
