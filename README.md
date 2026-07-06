@@ -38,7 +38,7 @@ npm run install:browsers
 Put the source workbook at:
 
 ```text
-Files/listToCheck.xlsx
+Files/ListToCheck.xlsx
 ```
 
 Then run:
@@ -50,7 +50,7 @@ npm start
 Useful options:
 
 ```bash
-npm start -- --input /path/to/listToCheck.xlsx --out-dir /path/to/Files
+npm start -- --input /path/to/ListToCheck.xlsx --out-dir /path/to/Files
 npm start -- --headed
 npm start -- --limit 10 --headed --slow-mo 100
 ```

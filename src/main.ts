@@ -31,7 +31,7 @@ function readArgs(argv: string[]): CliArgs {
   }
 
   const outDir = String(args.get("out-dir") ?? "Files");
-  const input = String(args.get("input") ?? resolve(outDir, "listToCheck.xlsx"));
+  const input = String(args.get("input") ?? resolve(outDir, "ListToCheck.xlsx"));
   const limitValue = args.get("limit");
 
   return {
