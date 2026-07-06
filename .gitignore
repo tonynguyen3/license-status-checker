@@ -1,0 +1,8 @@
+node_modules/
+dist/
+Files/Send-*.xlsx
+Files/DoNotSend-*.xlsx
+Files/coursesAlreadyTaken.xlsx
+Files/*.txt
+playwright-report/
+test-results/

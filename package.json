@@ -1,0 +1,25 @@
+{
+  "name": "license-status-checker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "install:browsers": "playwright install"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "playwright": "^1.45.0"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vitest": "^1.6.0"
+  }
+}

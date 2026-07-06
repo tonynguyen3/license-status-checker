@@ -1,0 +1,185 @@
+import { chromium, type Browser, type Page } from "playwright";
+import { daysUntil } from "./date-utils.js";
+import { getHoursNeeded } from "./hours.js";
+import { Logger } from "./logger.js";
+import type { BucketedResult, CheckerOptions, CourseFrequency, OutputPaths, Tradesman } from "./types.js";
+
+interface CheckRunResult {
+  send: Tradesman[];
+  doNotSend: Tradesman[];
+  courseFrequencies: CourseFrequency[];
+}
+
+export class WashingtonLicenseChecker {
+  private readonly courseCounts = new Map<string, { courseName: string; courseCode: string; frequency: number }>();
+
+  constructor(
+    private readonly logger: Logger,
+    private readonly outputPaths: OutputPaths,
+    private readonly options: CheckerOptions
+  ) {}
+
+  async checkLicenses(tradesmen: Tradesman[]): Promise<CheckRunResult> {
+    const browser = await chromium.launch({
+      headless: !this.options.headed,
+      slowMo: this.options.slowMo
+    });
+
+    try {
+      const page = await browser.newPage();
+      const limitedTradesmen = this.options.limit ? tradesmen.slice(0, this.options.limit) : tradesmen;
+      const results: BucketedResult[] = [];
+
+      for (const tradesman of limitedTradesmen) {
+        try {
+          const result = await this.checkSingleLicense(page, tradesman);
+          results.push(result);
+        } catch (error) {
+          const message = error instanceof Error ? error.stack ?? error.message : String(error);
+          console.log(`There was an error with ${tradesman.licenseNumber}.`);
+          await this.logger.writeErrorsToLog(`${message}\nThere was a Playwright error.`, this.outputPaths.exceptionLogPath);
+        }
+      }
+
+      return {
+        send: results.filter((result) => result.bucket === "send").map((result) => result.tradesman),
+        doNotSend: results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman),
+        courseFrequencies: [...this.courseCounts.values()]
+      };
+    } finally {
+      await closeBrowser(browser);
+    }
+  }
+
+  private async checkSingleLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
+    await page.goto(
+      `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
+      { waitUntil: "domcontentloaded" }
+    );
+
+    const expiration = await this.checkExpirationDate(page);
+    if (expiration.days === -1) {
+      return this.doNotSend(tradesman, `${tradesman.licenseNumber} is not a valid license.`);
+    }
+
+    if (expiration.days > 90) {
+      tradesman.expirationDate = expiration.date.toLocaleDateString();
+      return this.doNotSend(tradesman, `${tradesman.licenseNumber} has likely already renewed.`);
+    }
+
+    const status = await page.locator("#StatusDescription strong").innerText({ timeout: 10_000 });
+    if (status.trim() !== "Active") {
+      return this.doNotSend(tradesman, `${tradesman.licenseNumber} is not active.`);
+    }
+
+    const trade = (await page.locator("#LicenseType").innerText({ timeout: 10_000 })).trim();
+    tradesman.trade = trade;
+    tradesman.hoursNeeded = getHoursNeeded(trade);
+
+    const hasCoursesSection = await page.locator("#Courses").count();
+    if (hasCoursesSection === 0) {
+      return { bucket: "send", tradesman };
+    }
+
+    const numberOfCredits = await this.sumCompletedCredits(page);
+    tradesman.hoursCompleted = numberOfCredits;
+    console.log(`${tradesman.licenseNumber} has completed ${tradesman.hoursCompleted} credits and needs ${tradesman.hoursNeeded}`);
+
+    if (numberOfCredits > 0) {
+      await this.recordCourseFrequencies(page);
+    }
+
+    if ((tradesman.hoursNeeded ?? 0) <= numberOfCredits) {
+      return this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has enough credits.`);
+    }
+
+    if (numberOfCredits > 0) {
+      return this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has some credits already.`);
+    }
+
+    return { bucket: "send", tradesman };
+  }
+
+  private async checkExpirationDate(page: Page): Promise<{ days: number; date: Date }> {
+    if (page.url() === "https://secure.lni.wa.gov/verify/default.aspx#ErrorMsg") {
+      return { days: -1, date: new Date(0) };
+    }
+
+    const expirationText = await page.locator("#ExpirationDate").innerText({ timeout: 10_000 });
+    const expirationDate = new Date(expirationText.trim());
+    if (Number.isNaN(expirationDate.getTime())) {
+      throw new Error(`Could not parse expiration date: ${expirationText}`);
+    }
+
+    return { days: daysUntil(expirationDate), date: expirationDate };
+  }
+
+  private async sumCompletedCredits(page: Page): Promise<number> {
+    const potentialCredits = page.locator("xpath=//span[contains(text(),'.00')]");
+    const count = await potentialCredits.count();
+    let total = 0;
+
+    for (let i = 0; i < count; i++) {
+      let text = (await potentialCredits.nth(i).innerText()).trim();
+      if (text.includes("$")) continue;
+
+      const firstSpace = text.indexOf(" ");
+      if (firstSpace > 0) {
+        text = text.slice(0, firstSpace);
+      }
+
+      const parsed = Number.parseFloat(text);
+      if (!Number.isNaN(parsed)) {
+        total += parsed;
+      }
+    }
+
+    return total;
+  }
+
+  private async recordCourseFrequencies(page: Page): Promise<void> {
+    const courseBlocks = page.locator("#coursesList .itemSingleCol");
+    const count = await courseBlocks.count();
+
+    for (let i = 0; i < count; i++) {
+      const block = courseBlocks.nth(i);
+
+      try {
+        const nameLabel = block.locator("label");
+        const labelText = (await nameLabel.innerText()).trim();
+        const sibling = block.locator("xpath=following-sibling::div").locator("xpath=following-sibling::div");
+        const codeLabel = sibling.locator("label");
+        const codeLabelText = (await codeLabel.innerText()).trim();
+
+        if (labelText !== "Course title" || codeLabelText !== "Course code") continue;
+
+        const courseName = (await nameLabel.locator("xpath=following-sibling::span").innerText()).trim();
+        const courseCode = (await codeLabel.locator("xpath=following-sibling::span").innerText()).trim();
+        const key = `${courseName}\u0000${courseCode}`;
+        const existing = this.courseCounts.get(key);
+
+        if (existing) {
+          existing.frequency++;
+        } else {
+          this.courseCounts.set(key, { courseName, courseCode, frequency: 1 });
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  private doNotSend(tradesman: Tradesman, reason: string): BucketedResult {
+    console.log(reason);
+    tradesman.notSendReason = reason;
+    return { bucket: "doNotSend", tradesman };
+  }
+}
+
+async function closeBrowser(browser: Browser): Promise<void> {
+  try {
+    await browser.close();
+  } catch {
+    // The run is already finished; browser cleanup failures should not hide output.
+  }
+}
