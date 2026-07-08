@@ -6,6 +6,8 @@ import { Logger } from "./logger.js";
 import type { CourseFrequency, OutputPaths, ProgressReporter, Tradesman } from "./types.js";
 
 type CellValue = ExcelJS.CellValue | undefined;
+const SUPPORTED_WORKSHEET_NAMES = ["Plumbers", "Plumber Trainees", "Electricians"] as const;
+const SUPPORTED_WORKSHEET_NAME_SET = new Set(SUPPORTED_WORKSHEET_NAMES.map((name) => normalizeWorksheetName(name)));
 
 interface ReadSpreadsheetOptions {
   worksheetName?: string;
@@ -164,17 +166,26 @@ export async function readWashingtonSpreadsheet(
 }
 
 function selectWorksheets(workbook: ExcelJS.Workbook, worksheetName?: string): ExcelJS.Worksheet[] {
-  if (!worksheetName) return workbook.worksheets;
+  if (!worksheetName) {
+    return workbook.worksheets.filter((sheet) => SUPPORTED_WORKSHEET_NAME_SET.has(normalizeWorksheetName(sheet.name)));
+  }
 
-  const normalizedName = worksheetName.trim().toLowerCase();
-  const worksheet = workbook.worksheets.find((sheet) => sheet.name.trim().toLowerCase() === normalizedName);
+  const normalizedName = normalizeWorksheetName(worksheetName);
+  if (!SUPPORTED_WORKSHEET_NAME_SET.has(normalizedName)) {
+    throw new Error(`Worksheet "${worksheetName}" is not supported. Supported worksheets: ${SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ")}`);
+  }
+
+  const worksheet = workbook.worksheets.find((sheet) => normalizeWorksheetName(sheet.name) === normalizedName);
 
   if (!worksheet) {
-    const availableSheets = workbook.worksheets.map((sheet) => `"${sheet.name}"`).join(", ");
-    throw new Error(`Worksheet "${worksheetName}" was not found. Available worksheets: ${availableSheets}`);
+    throw new Error(`Worksheet "${worksheetName}" was not found. Supported worksheets: ${SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ")}`);
   }
 
   return [worksheet];
+}
+
+function normalizeWorksheetName(name: string): string {
+  return name.trim().toLowerCase();
 }
 
 function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number | undefined>[] {

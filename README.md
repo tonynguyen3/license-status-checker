@@ -48,13 +48,12 @@ The input workbook must be named `ListToCheck.xlsx` unless you pass a custom `--
 Files/ListToCheck.xlsx
 ```
 
-By default, the app reads every worksheet in that workbook. To read only one worksheet, pass `--worksheet` with the sheet name:
+By default, the app reads only the supported worksheets in that workbook and ignores other tabs. To read only one supported worksheet, pass `--worksheet` with the sheet name:
 
 ```bash
 npm start -- --worksheet Electricians
 npm start -- --worksheet Plumbers
 npm start -- --worksheet "Plumber Trainees"
-npm start -- --worksheet "Electrical Trainees"
 ```
 
 Supported worksheet names:
@@ -62,7 +61,6 @@ Supported worksheet names:
 - `Plumbers`
 - `Plumber Trainees`
 - `Electricians`
-- `Electrical Trainees`
 
 Each worksheet must use the Washington L&I export-style columns:
 
@@ -112,7 +110,6 @@ Useful options:
 npm start -- --input /path/to/ListToCheck.xlsx --out-dir /path/to/Files
 npm start -- --worksheet Electricians
 npm start -- --worksheet "Plumber Trainees" --limit 5
-npm start -- --worksheet "Electrical Trainees" --limit 5
 npm start -- --headed
 npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 3000
 ```

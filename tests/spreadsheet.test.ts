@@ -52,7 +52,7 @@ describe("readWashingtonSpreadsheet", () => {
     const inputPath = join(dir, "ListToCheck.xlsx");
     const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Licenses");
+    const worksheet = workbook.addWorksheet("Electricians");
     addHeader(worksheet);
     worksheet.addRow(["EL", "LIC-1", "Ada", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
     worksheet.addRow(["EL", "", "Missing", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
@@ -71,9 +71,33 @@ describe("readWashingtonSpreadsheet", () => {
       })
     ]);
 
-    await expect(readFile(outputPaths.exceptionLogPath, "utf8")).resolves.toContain("Skipped Licenses!3");
-    await expect(readFile(outputPaths.expiredLogPath, "utf8")).resolves.toContain("Skipped Licenses!4 (LIC-OLD)");
-    await expect(readFile(outputPaths.greaterThan90LogPath, "utf8")).resolves.toContain("Skipped Licenses!5 (LIC-FAR)");
+    await expect(readFile(outputPaths.exceptionLogPath, "utf8")).resolves.toContain("Skipped Electricians!3");
+    await expect(readFile(outputPaths.expiredLogPath, "utf8")).resolves.toContain("Skipped Electricians!4 (LIC-OLD)");
+    await expect(readFile(outputPaths.greaterThan90LogPath, "utf8")).resolves.toContain("Skipped Electricians!5 (LIC-FAR)");
+  });
+
+  it("ignores unsupported worksheets when reading all worksheets", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const inputPath = join(dir, "ListToCheck.xlsx");
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const workbook = new ExcelJS.Workbook();
+    const electricians = workbook.addWorksheet("Electricians");
+    const roofers = workbook.addWorksheet("Roofers");
+    addHeader(electricians);
+    addHeader(roofers);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
+    roofers.addRow(["RF", "RF-1", "Roo", "2 Main", "", "Tacoma", "WA", "98402", "7/20/2026"]);
+    await workbook.xlsx.writeFile(inputPath);
+
+    const logger = new TestLogger();
+    const tradesmen = await readWashingtonSpreadsheet(inputPath, logger, outputPaths);
+
+    expect(tradesmen).toEqual([
+      expect.objectContaining({
+        licenseNumber: "EL-1",
+        name: "Eli"
+      })
+    ]);
   });
 
   it("reads only the requested worksheet", async () => {
@@ -117,6 +141,6 @@ describe("readWashingtonSpreadsheet", () => {
       readWashingtonSpreadsheet(inputPath, logger, outputPaths, {
         worksheetName: "Roofers"
       })
-    ).rejects.toThrow('Worksheet "Roofers" was not found. Available worksheets: "Electricians", "Plumbers"');
+    ).rejects.toThrow('Worksheet "Roofers" is not supported. Supported worksheets: "Plumbers", "Plumber Trainees", "Electricians"');
   });
 });

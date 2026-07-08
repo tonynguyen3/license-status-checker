@@ -245,20 +245,39 @@ class ImapConnection {
     this.socket.write(`${tag} ${command}\r\n`);
     const response = await this.readUntil((text) => new RegExp(`^${tag} `, "m").test(text));
     if (!new RegExp(`^${tag} ${expectedStatus}\\b`, "m").test(response)) {
-      throw new Error(`IMAP command failed: ${response}`);
+      throw new Error(`IMAP command failed: ${summarizeImapResponse(response)}`);
     }
     return response;
   }
 
   async fetchMessage(messageId: number): Promise<string> {
-    const response = await this.command(`FETCH ${messageId} BODY.PEEK[]`, "OK");
+    const tag = `A${(++this.tagNumber).toString().padStart(4, "0")}`;
+    this.socket.write(`${tag} FETCH ${messageId} BODY.PEEK[]\r\n`);
+    const response = await this.readUntil((text) => {
+      const literal = findImapLiteral(text);
+      if (!literal) return false;
+      if (text.length < literal.bodyStart + literal.length) return false;
+
+      const afterLiteral = text.slice(literal.bodyStart + literal.length);
+      return new RegExp(`^${tag} `, "m").test(afterLiteral);
+    });
+
+    const literal = findImapLiteral(response);
+    if (!literal) {
+      throw new Error(`Could not read message ${messageId} from IMAP response.`);
+    }
+
+    const afterLiteral = response.slice(literal.bodyStart + literal.length);
+    if (!new RegExp(`^${tag} OK\\b`, "m").test(afterLiteral)) {
+      throw new Error(`IMAP fetch failed for message ${messageId}: ${summarizeImapResponse(afterLiteral)}`);
+    }
+
     const literalMatch = response.match(/\{(\d+)\}\r?\n/);
     if (!literalMatch) {
       throw new Error(`Could not read message ${messageId} from IMAP response.`);
     }
 
-    const start = response.indexOf(literalMatch[0]) + literalMatch[0].length;
-    return response.slice(start, start + Number(literalMatch[1]));
+    return response.slice(literal.bodyStart, literal.bodyStart + literal.length);
   }
 
   async close(): Promise<void> {
@@ -279,4 +298,20 @@ class ImapConnection {
     this.buffer = "";
     return text;
   }
+}
+
+function findImapLiteral(response: string): { bodyStart: number; length: number } | undefined {
+  const literalMatch = response.match(/\{(\d+)\}\r?\n/);
+  if (!literalMatch) return undefined;
+
+  return {
+    bodyStart: response.indexOf(literalMatch[0]) + literalMatch[0].length,
+    length: Number(literalMatch[1])
+  };
+}
+
+function summarizeImapResponse(response: string): string {
+  return response
+    .replace(/\s+/g, " ")
+    .slice(0, 500);
 }
