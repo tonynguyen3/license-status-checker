@@ -1,4 +1,4 @@
-import { appendFile } from "node:fs/promises";
+import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
@@ -82,7 +82,15 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
 async function ensureLogFiles(outputPaths: OutputPaths): Promise<void> {
   await Promise.all([
     appendFile(outputPaths.expiredLogPath, "", "utf8"),
-    appendFile(outputPaths.greaterThan90LogPath, "", "utf8"),
-    appendFile(outputPaths.exceptionLogPath, "", "utf8")
+    ensureLogMessage(outputPaths.greaterThan90LogPath, "No entries greater than 90 days.\n"),
+    ensureLogMessage(outputPaths.exceptionLogPath, "There were no exceptions.\n")
   ]);
+}
+
+async function ensureLogMessage(path: string, message: string): Promise<void> {
+  await appendFile(path, "", "utf8");
+  const fileStat = await stat(path);
+  if (fileStat.size === 0) {
+    await writeFile(path, message, "utf8");
+  }
 }

@@ -1,10 +1,11 @@
 import { createReadStream } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
+import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { runWashingtonCheck } from "./runner.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
 
@@ -42,8 +43,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/runs") {
+      await handleRunsPage(response);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/upload") {
       await handleUpload(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/check-email") {
+      await handleCheckEmail(response);
       return;
     }
 
@@ -95,23 +106,50 @@ async function handleUpload(request: IncomingMessage, response: ServerResponse):
     return;
   }
 
-  const uploadId = createId();
+  const uploaded = await saveUploadedWorkbook(file.filename, file.data);
+  sendJson(response, 200, uploaded);
+}
+
+async function handleCheckEmail(response: ServerResponse): Promise<void> {
+  if (!imapConfigured()) {
+    sendJson(response, 400, { error: "IMAP settings are not configured." });
+    return;
+  }
+
+  const workbook = await findInputWorkbookEmail();
+  if (!workbook) {
+    sendJson(response, 404, { error: "No matching unread email with an input workbook was found." });
+    return;
+  }
+
+  const uploaded = await saveUploadedWorkbook(workbook.filename, workbook.content);
+  sendJson(response, 200, {
+    ...uploaded,
+    email: {
+      from: workbook.from,
+      subject: workbook.subject,
+      messageId: workbook.messageId
+    }
+  });
+}
+
+async function saveUploadedWorkbook(originalName: string, content: Buffer): Promise<UploadedWorkbook> {
+  const uploadId = createRunFolderName();
   const uploadDir = join(rootDir, uploadId);
   const inputPath = join(uploadDir, "ListToCheck.xlsx");
   await mkdir(uploadDir, { recursive: true });
-  await writeFile(inputPath, file.data);
+  await writeFile(inputPath, content);
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(inputPath);
   const uploaded: UploadedWorkbook = {
     id: uploadId,
     path: inputPath,
-    originalName: file.filename,
+    originalName,
     worksheets: workbook.worksheets.map((worksheet) => worksheet.name)
   };
   uploads.set(uploadId, uploaded);
-
-  sendJson(response, 200, uploaded);
+  return uploaded;
 }
 
 async function handleRun(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -128,7 +166,7 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     return;
   }
 
-  const runId = createId();
+  const runId = upload.id;
   const outputDir = join(dirname(upload.path), "output");
   const run: WebRun = {
     id: runId,
@@ -257,9 +295,8 @@ function handleEvents(runId: string, response: ServerResponse): void {
 }
 
 async function handleFile(runId: string, fileKey: string, response: ServerResponse, download: boolean): Promise<void> {
-  const run = runs.get(runId);
-  const outputPaths = run?.outputPaths;
-  if (!run || !outputPaths) {
+  const outputPaths = await outputPathsForRun(runId);
+  if (!outputPaths) {
     sendJson(response, 404, { error: "Run output is not available yet." });
     return;
   }
@@ -270,12 +307,28 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
     return;
   }
 
+  try {
+    const fileStat = await stat(path);
+    if (!fileStat.isFile()) {
+      sendJson(response, 404, { error: "File not found." });
+      return;
+    }
+  } catch {
+    sendJson(response, 404, { error: "File not found." });
+    return;
+  }
+
   const isText = extname(path).toLowerCase() === ".txt";
   response.writeHead(200, {
     "Content-Type": isText ? "text/plain; charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${basename(path)}"`
   });
   createReadStream(path).pipe(response);
+}
+
+async function handleRunsPage(response: ServerResponse): Promise<void> {
+  const runSummaries = await listPreviousRuns();
+  sendHtml(response, runsHtml(runSummaries));
 }
 
 function emit(run: WebRun, update: ProgressUpdate): void {
@@ -348,6 +401,58 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
   return files[fileKey];
 }
 
+async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined> {
+  const run = runs.get(runId);
+  if (run?.outputPaths) return run.outputPaths;
+
+  const outputDir = join(rootDir, runId, "output");
+  const files = await filesInDirectory(outputDir);
+  const send = files.find((file) => /^Send-.+\.xlsx$/i.test(file));
+  const doNotSend = files.find((file) => /^DoNotSend-.+\.xlsx$/i.test(file));
+
+  if (!send || !doNotSend) return undefined;
+
+  return {
+    sendPath: join(outputDir, send),
+    doNotSendPath: join(outputDir, doNotSend),
+    coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
+    expiredLogPath: join(outputDir, "expired.txt"),
+    greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
+    exceptionLogPath: join(outputDir, "exception.txt")
+  };
+}
+
+async function listPreviousRuns(): Promise<Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>> {
+  await mkdir(rootDir, { recursive: true });
+  const entries = await readdir(rootDir, { withFileTypes: true });
+  const summaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const outputPaths = await outputPathsForRun(entry.name);
+    if (!outputPaths) continue;
+
+    const folderStat = await stat(join(rootDir, entry.name));
+    summaries.push({
+      id: entry.name,
+      createdAt: folderStat.birthtime.toLocaleString(),
+      files: previousRunFileLinks(entry.name, outputPaths)
+    });
+  }
+
+  return summaries.sort((a, b) => b.id.localeCompare(a.id));
+}
+
+async function filesInDirectory(path: string): Promise<string[]> {
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
 function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, string> {
   return Object.fromEntries(
     Object.entries({
@@ -361,8 +466,43 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
   );
 }
 
-function createId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<string, FileLink> {
+  return Object.fromEntries(
+    Object.entries({
+      send: outputPaths.sendPath,
+      doNotSend: outputPaths.doNotSendPath,
+      coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
+      expired: outputPaths.expiredLogPath,
+      greaterThan90: outputPaths.greaterThan90LogPath,
+      exception: outputPaths.exceptionLogPath
+    }).map(([key, path]) => [key, { href: `/runs/${runId}/files/${key}`, label: basename(path) }])
+  );
+}
+
+function createRunFolderName(date = new Date()): string {
+  const stamp = [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join("-");
+
+  if (!uploads.has(stamp) && !runs.has(stamp)) {
+    return stamp;
+  }
+
+  for (let counter = 2; ; counter++) {
+    const candidate = `${stamp}-${counter}`;
+    if (!uploads.has(candidate) && !runs.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+function pad(value: number): string {
+  return value.toString().padStart(2, "0");
 }
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
@@ -429,7 +569,7 @@ function pageHtml(): string {
 <body>
   <header>
     <h1>License Status Checker</h1>
-    <div class="meta" id="status">Upload a workbook to begin.</div>
+    <div class="meta"><a href="/runs">Previous Runs</a> · <span id="status">Upload a workbook to begin.</span></div>
   </header>
   <main>
     <aside>
@@ -439,6 +579,7 @@ function pageHtml(): string {
           <input id="file" type="file" accept=".xlsx">
         </div>
         <button id="upload">Upload Input File</button>
+        <button id="checkEmail">Check Email for Input File</button>
         <div class="meta" id="uploadMeta"></div>
         <div>
           <label for="worksheet">Worksheet</label>
@@ -472,6 +613,7 @@ function pageHtml(): string {
     const maxFeedLines = 500;
     const fileInput = document.getElementById("file");
     const uploadButton = document.getElementById("upload");
+    const checkEmailButton = document.getElementById("checkEmail");
     const runButton = document.getElementById("run");
     const stopButton = document.getElementById("stop");
     const worksheet = document.getElementById("worksheet");
@@ -496,18 +638,19 @@ function pageHtml(): string {
       setBusy(false);
       if (!response.ok) return setStatus(payload.error || "Upload failed.");
 
-      state.uploadId = payload.id;
-      worksheet.innerHTML = '<option value="">All worksheets</option>';
-      for (const name of payload.worksheets) {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        worksheet.appendChild(option);
-      }
-      worksheet.disabled = false;
-      runButton.disabled = false;
-      uploadMeta.textContent = payload.originalName + " uploaded. " + payload.worksheets.length + " worksheet(s) found.";
-      setStatus("Workbook uploaded.");
+      loadWorkbook(payload, "Workbook uploaded.");
+    });
+
+    checkEmailButton.addEventListener("click", async () => {
+      setBusy(true);
+      setStatus("Checking email for input file.");
+      const response = await fetch("/check-email", { method: "POST" });
+      const payload = await response.json();
+      setBusy(false);
+      if (!response.ok) return setStatus(payload.error || "Email check failed.");
+
+      const source = payload.email?.subject ? ' from email "' + payload.email.subject + '"' : " from email";
+      loadWorkbook(payload, "Workbook loaded" + source + ".");
     });
 
     runButton.addEventListener("click", async () => {
@@ -623,6 +766,21 @@ function pageHtml(): string {
       }
     }
 
+    function loadWorkbook(payload, message) {
+      state.uploadId = payload.id;
+      worksheet.innerHTML = '<option value="">All worksheets</option>';
+      for (const name of payload.worksheets) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        worksheet.appendChild(option);
+      }
+      worksheet.disabled = false;
+      runButton.disabled = false;
+      uploadMeta.textContent = payload.originalName + " loaded. " + payload.worksheets.length + " worksheet(s) found.";
+      setStatus(message);
+    }
+
     function append(message) {
       const line = document.createElement("div");
       line.textContent = new Date().toLocaleTimeString() + "  " + message;
@@ -637,6 +795,7 @@ function pageHtml(): string {
 
     function setBusy(isBusy) {
       uploadButton.disabled = isBusy;
+      checkEmailButton.disabled = isBusy;
       runButton.disabled = isBusy || !state.uploadId;
       stopButton.disabled = !state.isRunning || state.stopRequested;
     }
@@ -647,4 +806,71 @@ function pageHtml(): string {
   </script>
 </body>
 </html>`;
+}
+
+interface FileLink {
+  href: string;
+  label: string;
+}
+
+function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>): string {
+  const rows = runSummaries.map((run) => `
+    <section class="run">
+      <div>
+        <h2>${escapeHtml(run.id)}</h2>
+        <p>${escapeHtml(run.createdAt)}</p>
+      </div>
+      <div class="links">
+        ${runFileLink(run.files.send)}
+        ${runFileLink(run.files.doNotSend)}
+        ${runFileLink(run.files.coursesAlreadyTaken)}
+        ${runFileLink(run.files.expired)}
+        ${runFileLink(run.files.greaterThan90)}
+        ${runFileLink(run.files.exception)}
+      </div>
+    </section>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Previous Runs</title>
+  <style>
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:#202124; background:#fff; }
+    header { border-bottom:1px solid #dadce0; padding:18px 24px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
+    h1 { font-size:20px; margin:0; }
+    main { max-width:1100px; margin:0 auto; padding:20px 24px; }
+    a { color:#0b57d0; font-weight:700; text-decoration:none; }
+    .run { border:1px solid #dadce0; border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    h2 { font-size:16px; margin:0 0 4px; }
+    p { margin:0; color:#5f6368; font-size:13px; }
+    .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
+    .empty { color:#5f6368; border:1px solid #dadce0; border-radius:6px; padding:18px; }
+    @media (max-width: 760px) { .run { display:block; } .links { justify-content:flex-start; margin-top:12px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Previous Runs</h1>
+    <a href="/">New Run</a>
+  </header>
+  <main>
+    ${rows || '<div class="empty">No completed runs found yet.</div>'}
+  </main>
+</body>
+</html>`;
+}
+
+function runFileLink(file: FileLink | undefined): string {
+  return file ? `<a href="${file.href}">${escapeHtml(file.label)}</a>` : "";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

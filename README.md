@@ -159,6 +159,32 @@ EMAIL_BASE_URL=http://localhost:3000
 
 If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3000`. Keep the web server running if recipients need to open the log links.
 
+### Email Input Workbook
+
+The web interface can also check email for an input workbook. This is a manual button, not background polling, so the app will not automatically run just because an email arrives.
+
+Add IMAP settings to your local `.env`:
+
+```text
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_SECURE=true
+IMAP_USER=your-email@gmail.com
+IMAP_PASSWORD="your app password"
+INPUT_EMAIL_ATTACHMENT_NAME=WA Ele *.xlsx,WA PLM *.xlsx,WA PLM Trainees *.xlsx,Master List from Kelly for AnytimeCE Post card mailing *.xlsx
+```
+
+Optional filters:
+
+```text
+INPUT_EMAIL_FROM=tonynguyen3@gmail.com,techsupport1@anytimece.com,hvacschool@hvacschool.com,hvacshoolappemailer@gmail.com,hvacschoolappemailer@gmail.com
+INPUT_EMAIL_SUBJECT_CONTAINS=License Status Input
+```
+
+The email checker looks at unread messages in newest-first order, finds the first message that matches the optional sender/subject filters, and loads the matching Excel attachment. `INPUT_EMAIL_FROM` accepts a comma-separated sender list. `INPUT_EMAIL_ATTACHMENT_NAME` accepts comma-separated wildcard patterns. Use `*.xlsx` if you want to allow any Excel attachment.
+
+After a workbook is loaded from email, choose the worksheet/options and click `Run Check`. The email is marked read only after a matching workbook is loaded.
+
 ## Verify
 
 ```bash
