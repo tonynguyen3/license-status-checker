@@ -114,10 +114,14 @@ npm start -- --worksheet Electricians
 npm start -- --worksheet "Plumber Trainees" --limit 5
 npm start -- --worksheet "Electrical Trainees" --limit 5
 npm start -- --headed
-npm start -- --limit 10 --headed --slow-mo 100
+npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 3000
 ```
 
 `--headed` opens the browser visibly, which is helpful while validating selectors against the state website.
+
+`--slow-mo` is a Playwright/browser debugging option. It slows down low-level browser actions such as navigation, locator operations, clicks, and typing. It is most useful with `--headed` when you want to watch what the browser is doing.
+
+`--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `3000`, which waits about 3 seconds between license rows.
 
 ## Web Interface
 
@@ -133,7 +137,9 @@ Then open:
 http://localhost:3000
 ```
 
-The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
+The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, set a pause between Washington website checks, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
+
+If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
 
 ### Email Results
 

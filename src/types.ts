@@ -30,6 +30,7 @@ export interface BucketedResult {
 export interface CheckerOptions {
   headed: boolean;
   slowMo: number;
+  checkDelayMs: number;
   limit?: number;
   onProgress?: ProgressReporter;
   isCanceled?: () => boolean;

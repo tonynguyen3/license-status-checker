@@ -11,6 +11,13 @@ interface CheckRunResult {
   canceled: boolean;
 }
 
+class WashingtonRateLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WashingtonRateLimitError";
+  }
+}
+
 export class WashingtonLicenseChecker {
   private readonly courseCounts = new Map<string, { courseName: string; courseCode: string; frequency: number }>();
 
@@ -87,8 +94,24 @@ export class WashingtonLicenseChecker {
         } catch (error) {
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
           console.log(`There was an error with ${tradesman.licenseNumber}.`);
-          await this.logger.writeErrorsToLog(`${message}\nThere was a Playwright error.`, this.outputPaths.exceptionLogPath);
+          await this.logger.writeErrorsToLog(
+            `License ${tradesman.licenseNumber}\n${message}\nThere was a Playwright error.`,
+            this.outputPaths.exceptionLogPath
+          );
           errorCount++;
+
+          if (error instanceof WashingtonRateLimitError) {
+            canceled = true;
+            this.options.onProgress?.({
+              type: "rate_limited",
+              message:
+                "Washington site returned a rate-limit response. The run stopped before checking more licenses.",
+              current,
+              total,
+              remaining: total - current
+            });
+            break;
+          }
         }
 
         if (current === total || current % 50 === 0) {
@@ -99,6 +122,10 @@ export class WashingtonLicenseChecker {
             total,
             remaining: total - current
           });
+        }
+
+        if (current < total && !canceled) {
+          await this.pauseBetweenChecks();
         }
       }
 
@@ -122,10 +149,27 @@ export class WashingtonLicenseChecker {
   }
 
   private async checkSingleLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
-    await page.goto(
+    const response = await page.goto(
       `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
-      { waitUntil: "domcontentloaded" }
+      { waitUntil: "load" }
     );
+
+    if (!response) {
+      throw new Error(`Washington site did not return an HTTP response for ${tradesman.licenseNumber}.`);
+    }
+
+    const httpStatus = response.status();
+    if (httpStatus === 429) {
+      throw new WashingtonRateLimitError(
+        `Washington site returned HTTP 429 rate limit for ${tradesman.licenseNumber}.`
+      );
+    }
+
+    if (httpStatus >= 400) {
+      throw new Error(`Washington site returned HTTP ${httpStatus} for ${tradesman.licenseNumber}.`);
+    }
+
+    await this.throwIfRateLimitPage(page, tradesman);
 
     const expiration = await this.checkExpirationDate(page);
     if (expiration.days === -1) {
@@ -168,6 +212,40 @@ export class WashingtonLicenseChecker {
     }
 
     return { bucket: "send", tradesman };
+  }
+
+  private async pauseBetweenChecks(): Promise<void> {
+    const delayMs = Math.max(0, this.options.checkDelayMs);
+    if (delayMs === 0) return;
+
+    const sleepChunkMs = 250;
+    let remainingMs = delayMs;
+    while (remainingMs > 0) {
+      if (this.options.isCanceled?.()) return;
+      await sleep(Math.min(sleepChunkMs, remainingMs));
+      remainingMs -= sleepChunkMs;
+    }
+  }
+
+  private async throwIfRateLimitPage(page: Page, tradesman: Tradesman): Promise<void> {
+    let bodyText = "";
+    try {
+      bodyText = (await page.locator("body").innerText({ timeout: 1_000 })).toLowerCase();
+    } catch {
+      return;
+    }
+
+    const looksRateLimited =
+      bodyText.includes("too many requests") ||
+      bodyText.includes("rate limit") ||
+      bodyText.includes("the requested url was rejected") ||
+      (bodyText.includes("support id") && bodyText.includes("request"));
+
+    if (looksRateLimited) {
+      throw new WashingtonRateLimitError(
+        `Washington site appears to be showing an F5/rate-limit page for ${tradesman.licenseNumber}.`
+      );
+    }
   }
 
   private async checkExpirationDate(page: Page): Promise<{ days: number; date: Date }> {
@@ -261,4 +339,8 @@ async function closeBrowser(browser: Browser): Promise<void> {
   } catch {
     // The run is already finished; browser cleanup failures should not hide output.
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

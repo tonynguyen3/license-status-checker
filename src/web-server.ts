@@ -158,6 +158,7 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     worksheet?: string;
     limit?: number;
     headed?: boolean;
+    checkDelaySeconds?: number;
   };
 
   const upload = body.uploadId ? uploads.get(body.uploadId) : undefined;
@@ -184,6 +185,10 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     worksheet: body.worksheet || undefined,
     headed: body.headed === true,
     slowMo: 0,
+    checkDelayMs:
+      Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
+        ? Math.round(body.checkDelaySeconds * 1000)
+        : 3000,
     limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined,
     onProgress: (update) => emit(run, update),
     isCanceled: () => run.cancelRequested
@@ -591,6 +596,10 @@ function pageHtml(): string {
           <label for="limit">Website check limit</label>
           <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
         </div>
+        <div>
+          <label for="checkDelay">Pause between website checks</label>
+          <input id="checkDelay" type="number" min="0" step="0.5" value="3">
+        </div>
         <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         <button id="run" disabled>Run Check</button>
         <button id="stop" class="danger" disabled>Stop Run</button>
@@ -618,6 +627,7 @@ function pageHtml(): string {
     const stopButton = document.getElementById("stop");
     const worksheet = document.getElementById("worksheet");
     const limit = document.getElementById("limit");
+    const checkDelay = document.getElementById("checkDelay");
     const headed = document.getElementById("headed");
     const feed = document.getElementById("feed");
     const files = document.getElementById("files");
@@ -669,6 +679,7 @@ function pageHtml(): string {
           uploadId: state.uploadId,
           worksheet: worksheet.value,
           limit: limit.value ? Number(limit.value) : undefined,
+          checkDelaySeconds: checkDelay.value ? Number(checkDelay.value) : 0,
           headed: headed.checked
         })
       });

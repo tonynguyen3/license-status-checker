@@ -14,4 +14,10 @@ describe("readArgs", () => {
 
     expect(args.worksheet).toBe("Plumber Trainees");
   });
+
+  it("supports a configurable delay between website checks", () => {
+    const args = readArgs(["--check-delay-ms", "4500"]);
+
+    expect(args.checkDelayMs).toBe(4500);
+  });
 });

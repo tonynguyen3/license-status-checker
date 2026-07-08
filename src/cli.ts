@@ -6,6 +6,7 @@ export interface CliArgs {
   worksheet?: string;
   headed: boolean;
   slowMo: number;
+  checkDelayMs: number;
   limit?: number;
 }
 
@@ -35,6 +36,7 @@ export function readArgs(argv: string[]): CliArgs {
   const outDir = String(args.get("out-dir") ?? "Files");
   const input = String(args.get("input") ?? resolve(outDir, "ListToCheck.xlsx"));
   const limitValue = args.get("limit");
+  const checkDelayValue = Number(args.get("check-delay-ms") ?? 3000);
 
   return {
     input: resolve(input),
@@ -42,6 +44,7 @@ export function readArgs(argv: string[]): CliArgs {
     worksheet: typeof args.get("worksheet") === "string" ? String(args.get("worksheet")) : undefined,
     headed: args.get("headed") === true,
     slowMo: Number(args.get("slow-mo") ?? 0),
+    checkDelayMs: Number.isFinite(checkDelayValue) && checkDelayValue >= 0 ? checkDelayValue : 3000,
     limit: typeof limitValue === "string" ? Number(limitValue) : undefined
   };
 }

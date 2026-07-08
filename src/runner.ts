@@ -12,6 +12,7 @@ export interface RunOptions {
   worksheet?: string;
   headed: boolean;
   slowMo: number;
+  checkDelayMs?: number;
   limit?: number;
   onProgress?: ProgressReporter;
   isCanceled?: () => boolean;
@@ -42,6 +43,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   const checker = new WashingtonLicenseChecker(logger, outputPaths, {
     headed: options.headed,
     slowMo: options.slowMo,
+    checkDelayMs: options.checkDelayMs ?? 3000,
     limit: options.limit,
     onProgress: options.onProgress,
     isCanceled: options.isCanceled
