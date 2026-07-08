@@ -21,6 +21,7 @@ const emailPollState: EmailPollStatus = {
   running: false,
   logPath: emailPollLogPath
 };
+let emailPollTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface UploadedWorkbook {
   id: string;
@@ -94,6 +95,16 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/email-poll/status") {
       sendJson(response, 200, emailPollState);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/email-poll/enable") {
+      await handleEnableEmailPoll(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/email-poll/disable") {
+      await handleDisableEmailPoll(response);
       return;
     }
 
@@ -390,6 +401,21 @@ async function handleRunsPage(response: ServerResponse): Promise<void> {
   sendHtml(response, runsHtml(runSummaries));
 }
 
+async function handleEnableEmailPoll(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const bodyText = (await readRequestBody(request)).toString("utf8").trim();
+  const body = bodyText ? JSON.parse(bodyText) as { time?: string } : {};
+  const config = emailPollConfig();
+  config.enabled = true;
+  config.time = body.time?.trim() || config.time;
+  const result = await enableEmailPolling(config);
+  sendJson(response, result.ok ? 200 : 400, result.ok ? emailPollState : { error: result.error, status: emailPollState });
+}
+
+async function handleDisableEmailPoll(response: ServerResponse): Promise<void> {
+  await disableEmailPolling("Scheduled email polling disabled from the web UI.");
+  sendJson(response, 200, emailPollState);
+}
+
 function emit(run: WebRun, update: ProgressUpdate): void {
   run.events.push(update);
   for (const client of run.clients) {
@@ -583,43 +609,78 @@ function requestBaseUrl(request: IncomingMessage): string {
 
 function startEmailPollScheduler(): void {
   const config = emailPollConfig();
-  emailPollState.enabled = config.enabled;
-  emailPollState.scheduledTime = config.time;
 
   if (!config.enabled) {
+    emailPollState.enabled = false;
+    emailPollState.scheduledTime = config.time;
     void logEmailPoll("Scheduled email polling is disabled.");
     return;
   }
 
+  void enableEmailPolling(config);
+}
+
+async function enableEmailPolling(config = { ...emailPollConfig(), enabled: true }): Promise<{ ok: true } | { ok: false; error: string }> {
+  stopEmailPollTimer();
+  emailPollState.enabled = true;
+  emailPollState.scheduledTime = config.time;
+  emailPollState.nextCheckAt = undefined;
+
   if (!imapConfigured()) {
+    emailPollState.enabled = false;
     emailPollState.lastResult = "IMAP settings are not configured.";
-    void logEmailPoll("Scheduled email polling is enabled, but IMAP settings are not configured.");
-    return;
+    await logEmailPoll("Scheduled email polling is enabled, but IMAP settings are not configured.");
+    return { ok: false, error: emailPollState.lastResult };
   }
 
   if (!config.time) {
+    emailPollState.enabled = false;
     emailPollState.lastResult = "EMAIL_POLL_TIME is not configured.";
-    void logEmailPoll("Scheduled email polling is enabled, but EMAIL_POLL_TIME is not configured.");
-    return;
+    await logEmailPoll("Scheduled email polling is enabled, but EMAIL_POLL_TIME is not configured.");
+    return { ok: false, error: emailPollState.lastResult };
   }
 
   try {
     scheduleNextEmailPoll(config);
+    emailPollState.lastResult = `Scheduled email polling enabled for ${config.time}.`;
+    await logEmailPoll(emailPollState.lastResult);
+    return { ok: true };
   } catch (error) {
+    emailPollState.enabled = false;
     emailPollState.lastResult = error instanceof Error ? error.message : String(error);
-    void logEmailPoll(emailPollState.lastResult);
+    await logEmailPoll(emailPollState.lastResult);
+    return { ok: false, error: emailPollState.lastResult };
   }
 }
 
 function scheduleNextEmailPoll(config: EmailPollConfig): void {
   if (!config.time) return;
 
+  stopEmailPollTimer();
   const nextCheck = nextDailyCheckAt(config.time);
   emailPollState.nextCheckAt = nextCheck.toISOString();
   const delayMs = Math.max(0, nextCheck.getTime() - Date.now());
-  setTimeout(() => {
-    void runScheduledEmailPoll(config).finally(() => scheduleNextEmailPoll(config));
+  emailPollTimer = setTimeout(() => {
+    void runScheduledEmailPoll(config).finally(() => {
+      if (emailPollState.enabled) {
+        scheduleNextEmailPoll(config);
+      }
+    });
   }, delayMs);
+}
+
+async function disableEmailPolling(message: string): Promise<void> {
+  stopEmailPollTimer();
+  emailPollState.enabled = false;
+  emailPollState.nextCheckAt = undefined;
+  emailPollState.lastResult = message;
+  await logEmailPoll(message);
+}
+
+function stopEmailPollTimer(): void {
+  if (!emailPollTimer) return;
+  clearTimeout(emailPollTimer);
+  emailPollTimer = undefined;
 }
 
 async function runScheduledEmailPoll(config: EmailPollConfig): Promise<void> {
@@ -769,6 +830,9 @@ function pageHtml(): string {
     .status-box dl { margin:0; display:grid; gap:6px; }
     .status-box dt { font-weight:700; color:var(--ink); }
     .status-box dd { margin:0; color:var(--muted); overflow-wrap:anywhere; }
+    .status-actions { display:flex; gap:8px; margin-top:10px; }
+    .status-actions button { flex:1; }
+    button.secondary { background:#5f6368; }
     @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } }
   </style>
 </head>
@@ -808,10 +872,15 @@ function pageHtml(): string {
           <h2>Email Polling</h2>
           <dl>
             <dt>Status</dt><dd id="emailPollEnabled">Loading</dd>
+            <dt>Poll time</dt><dd><input id="emailPollTime" type="time"></dd>
             <dt>Last checked</dt><dd id="emailPollLastChecked">Loading</dd>
             <dt>Last result</dt><dd id="emailPollLastResult">Loading</dd>
             <dt>Next check</dt><dd id="emailPollNextCheck">Loading</dd>
           </dl>
+          <div class="status-actions">
+            <button id="enableEmailPoll" type="button">Enable</button>
+            <button id="disableEmailPoll" type="button" class="secondary">Disable</button>
+          </div>
         </div>
       </div>
     </aside>
@@ -850,6 +919,9 @@ function pageHtml(): string {
     const emailPollLastChecked = document.getElementById("emailPollLastChecked");
     const emailPollLastResult = document.getElementById("emailPollLastResult");
     const emailPollNextCheck = document.getElementById("emailPollNextCheck");
+    const emailPollTime = document.getElementById("emailPollTime");
+    const enableEmailPoll = document.getElementById("enableEmailPoll");
+    const disableEmailPoll = document.getElementById("disableEmailPoll");
 
     refreshEmailPollStatus();
     setInterval(refreshEmailPollStatus, 60000);
@@ -926,6 +998,29 @@ function pageHtml(): string {
         return;
       }
       setStatus("Stop requested.");
+    });
+
+    enableEmailPoll.addEventListener("click", async () => {
+      const initialTime = emailPollTime.value || "06:00";
+      const requestedTime = window.prompt("What time should email polling run each day? Use 24-hour HH:MM time.", initialTime);
+      if (requestedTime === null) {
+        await refreshEmailPollStatus();
+        return;
+      }
+
+      const time = requestedTime.trim();
+      if (!/^\\d{1,2}:\\d{2}$/.test(time)) {
+        setStatus("Enter poll time as HH:MM, for example 06:00.");
+        await refreshEmailPollStatus();
+        return;
+      }
+
+      emailPollTime.value = time;
+      await setEmailPolling("/email-poll/enable", { time });
+    });
+
+    disableEmailPoll.addEventListener("click", async () => {
+      await setEmailPolling("/email-poll/disable");
     });
 
     function connect(runId) {
@@ -1051,9 +1146,33 @@ function pageHtml(): string {
         emailPollLastChecked.textContent = formatDateTime(payload.lastCheckedAt) || "Never";
         emailPollLastResult.textContent = payload.lastResult || "No checks yet.";
         emailPollNextCheck.textContent = formatDateTime(payload.nextCheckAt) || "Not scheduled";
+        if (payload.scheduledTime) emailPollTime.value = payload.scheduledTime;
+        enableEmailPoll.disabled = payload.enabled;
+        disableEmailPoll.disabled = !payload.enabled;
       } catch {
         emailPollEnabled.textContent = "Unavailable";
       }
+    }
+
+    async function setEmailPolling(path, body) {
+      enableEmailPoll.disabled = true;
+      disableEmailPoll.disabled = true;
+      try {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          const message = payload.error || "Email polling update failed.";
+          emailPollLastResult.textContent = message;
+          setStatus(message);
+        }
+      } catch {
+        setStatus("Email polling update failed.");
+      }
+      await refreshEmailPollStatus();
     }
 
     function formatDateTime(value) {
