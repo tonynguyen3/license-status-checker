@@ -701,7 +701,7 @@ function pageHtml(): string {
     });
 
     function connect(runId) {
-      if (state.eventSource) state.eventSource.close();
+      closeProgressStream();
       state.eventSource = new EventSource("/runs/" + runId + "/events");
       state.eventSource.onmessage = (event) => {
         const update = JSON.parse(event.data);
@@ -720,6 +720,7 @@ function pageHtml(): string {
           state.isRunning = false;
           state.currentRunId = null;
           state.stopRequested = false;
+          closeProgressStream();
           setBusy(false);
           setStatus(update.type === "run_canceled" ? "Run stopped." : "Run complete.");
         }
@@ -727,6 +728,7 @@ function pageHtml(): string {
           state.isRunning = false;
           state.currentRunId = null;
           state.stopRequested = false;
+          closeProgressStream();
           setBusy(false);
           setStatus(update.message);
         }
@@ -738,8 +740,15 @@ function pageHtml(): string {
         if (status.textContent !== "Run complete." && status.textContent !== "Run stopped.") {
           setStatus("Progress connection closed.");
         }
+        closeProgressStream();
         setBusy(false);
       };
+    }
+
+    function closeProgressStream() {
+      if (!state.eventSource) return;
+      state.eventSource.close();
+      state.eventSource = null;
     }
 
     function renderFiles(fileLinks) {
