@@ -9,5 +9,6 @@ Files/Send-*.xlsx
 Files/DoNotSend-*.xlsx
 Files/coursesAlreadyTaken.xlsx
 Files/*.txt
+Files/*.log
 playwright-report/
 test-results/

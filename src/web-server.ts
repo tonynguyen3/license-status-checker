@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
@@ -13,8 +13,14 @@ loadEnvFile();
 
 const port = Number(process.env.PORT ?? 3000);
 const rootDir = resolve("Files", "web-runs");
+const emailPollLogPath = resolve("Files", "email-poll.log");
 const uploads = new Map<string, UploadedWorkbook>();
 const runs = new Map<string, WebRun>();
+const emailPollState: EmailPollStatus = {
+  enabled: false,
+  running: false,
+  logPath: emailPollLogPath
+};
 
 interface UploadedWorkbook {
   id: string;
@@ -32,6 +38,34 @@ interface WebRun {
   cancelRequested: boolean;
   outputPaths?: OutputPaths;
   error?: string;
+}
+
+interface RunStartOptions {
+  worksheet?: string;
+  headed: boolean;
+  checkDelayMs: number;
+  limit?: number;
+}
+
+interface EmailPollConfig {
+  enabled: boolean;
+  time?: string;
+  worksheet?: string;
+  headed: boolean;
+  checkDelayMs: number;
+  limit?: number;
+  baseUrl: string;
+}
+
+interface EmailPollStatus {
+  enabled: boolean;
+  scheduledTime?: string;
+  nextCheckAt?: string;
+  lastCheckedAt?: string;
+  lastResult?: string;
+  lastRunId?: string;
+  running: boolean;
+  logPath: string;
 }
 
 const server = createServer(async (request, response) => {
@@ -55,6 +89,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/check-email") {
       await handleCheckEmail(response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/email-poll/status") {
+      sendJson(response, 200, emailPollState);
       return;
     }
 
@@ -89,6 +128,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`Web interface running at http://localhost:${port}`);
+  startEmailPollScheduler();
 });
 
 async function handleUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -167,6 +207,20 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     return;
   }
 
+  const run = startRun(upload, {
+    worksheet: body.worksheet || undefined,
+    headed: body.headed === true,
+    checkDelayMs:
+      Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
+        ? Math.round(body.checkDelaySeconds * 1000)
+        : 3000,
+    limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined
+  }, requestBaseUrl(request));
+
+  sendJson(response, 200, { runId: run.id });
+}
+
+function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: string, onFinished?: (run: WebRun) => void): WebRun {
   const runId = upload.id;
   const outputDir = join(dirname(upload.path), "output");
   const run: WebRun = {
@@ -182,21 +236,18 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
   void runWashingtonCheck({
     input: upload.path,
     outDir: outputDir,
-    worksheet: body.worksheet || undefined,
-    headed: body.headed === true,
+    worksheet: options.worksheet,
+    headed: options.headed,
     slowMo: 0,
-    checkDelayMs:
-      Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
-        ? Math.round(body.checkDelaySeconds * 1000)
-        : 3000,
-    limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined,
+    checkDelayMs: options.checkDelayMs,
+    limit: options.limit,
     onProgress: (update) => emit(run, update),
     isCanceled: () => run.cancelRequested
   })
     .then(async (result) => {
       run.status = result.canceled ? "canceled" : "complete";
       run.outputPaths = result.outputPaths;
-      await maybeEmailResults(run, result, request);
+      await maybeEmailResults(run, result, baseUrl);
       emit(run, {
         type: result.canceled ? "run_canceled" : "run_complete",
         message: result.canceled ? "Run stopped. Partial output files are ready." : "Run complete. Output files are ready.",
@@ -209,15 +260,18 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
       run.error = error instanceof Error ? error.message : String(error);
       emit(run, { type: "run_error", message: run.error });
       closeClients(run);
+    })
+    .finally(() => {
+      onFinished?.(run);
     });
 
-  sendJson(response, 200, { runId });
+  return run;
 }
 
 async function maybeEmailResults(
   run: WebRun,
   result: Awaited<ReturnType<typeof runWashingtonCheck>>,
-  request: IncomingMessage
+  baseUrl: string
 ): Promise<void> {
   if (!emailConfigured()) {
     emit(run, {
@@ -236,7 +290,7 @@ async function maybeEmailResults(
     await emailRunResults({
       outputPaths: result.outputPaths,
       runId: run.id,
-      baseUrl: process.env.EMAIL_BASE_URL ?? requestBaseUrl(request),
+      baseUrl,
       canceled: result.canceled,
       sendCount: result.sendCount,
       doNotSendCount: result.doNotSendCount,
@@ -527,6 +581,148 @@ function requestBaseUrl(request: IncomingMessage): string {
   return `${proto ?? "http"}://${host}`;
 }
 
+function startEmailPollScheduler(): void {
+  const config = emailPollConfig();
+  emailPollState.enabled = config.enabled;
+  emailPollState.scheduledTime = config.time;
+
+  if (!config.enabled) {
+    void logEmailPoll("Scheduled email polling is disabled.");
+    return;
+  }
+
+  if (!imapConfigured()) {
+    emailPollState.lastResult = "IMAP settings are not configured.";
+    void logEmailPoll("Scheduled email polling is enabled, but IMAP settings are not configured.");
+    return;
+  }
+
+  if (!config.time) {
+    emailPollState.lastResult = "EMAIL_POLL_TIME is not configured.";
+    void logEmailPoll("Scheduled email polling is enabled, but EMAIL_POLL_TIME is not configured.");
+    return;
+  }
+
+  try {
+    scheduleNextEmailPoll(config);
+  } catch (error) {
+    emailPollState.lastResult = error instanceof Error ? error.message : String(error);
+    void logEmailPoll(emailPollState.lastResult);
+  }
+}
+
+function scheduleNextEmailPoll(config: EmailPollConfig): void {
+  if (!config.time) return;
+
+  const nextCheck = nextDailyCheckAt(config.time);
+  emailPollState.nextCheckAt = nextCheck.toISOString();
+  const delayMs = Math.max(0, nextCheck.getTime() - Date.now());
+  setTimeout(() => {
+    void runScheduledEmailPoll(config).finally(() => scheduleNextEmailPoll(config));
+  }, delayMs);
+}
+
+async function runScheduledEmailPoll(config: EmailPollConfig): Promise<void> {
+  if (emailPollState.running) return;
+
+  emailPollState.running = true;
+  emailPollState.lastCheckedAt = new Date().toISOString();
+  await logEmailPoll(`Checking email for input workbook at scheduled time ${config.time}.`);
+
+  try {
+    if (activeRunExists()) {
+      emailPollState.lastResult = "Skipped because a run is already active.";
+      await logEmailPoll(emailPollState.lastResult);
+      return;
+    }
+
+    const workbook = await findInputWorkbookEmail();
+    if (!workbook) {
+      emailPollState.lastResult = "No matching unread email input workbook found.";
+      await logEmailPoll(emailPollState.lastResult);
+      return;
+    }
+
+    const uploaded = await saveUploadedWorkbook(workbook.filename, workbook.content);
+    const run = startRun(
+      uploaded,
+      {
+        worksheet: config.worksheet,
+        headed: config.headed,
+        checkDelayMs: config.checkDelayMs,
+        limit: config.limit
+      },
+      config.baseUrl,
+      (finishedRun) => {
+        void logEmailPoll(`Run ${finishedRun.id} finished with status ${finishedRun.status}.`);
+      }
+    );
+
+    emailPollState.lastRunId = run.id;
+    emailPollState.lastResult = `Found ${workbook.filename} and started run ${run.id}.`;
+    await logEmailPoll(`${emailPollState.lastResult} Subject: ${workbook.subject ?? "(no subject)"}.`);
+  } catch (error) {
+    emailPollState.lastResult = `Email poll failed: ${error instanceof Error ? error.message : String(error)}`;
+    await logEmailPoll(emailPollState.lastResult);
+  } finally {
+    emailPollState.running = false;
+  }
+}
+
+function emailPollConfig(): EmailPollConfig {
+  const time = process.env.EMAIL_POLL_TIME?.trim();
+  const enabled = process.env.EMAIL_POLL_ENABLED === undefined
+    ? Boolean(time)
+    : parseBoolean(process.env.EMAIL_POLL_ENABLED);
+  const limit = Number(process.env.EMAIL_POLL_LIMIT);
+  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 3000);
+
+  return {
+    enabled,
+    time,
+    worksheet: process.env.EMAIL_POLL_WORKSHEET || undefined,
+    headed: parseBoolean(process.env.EMAIL_POLL_HEADED),
+    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 3000,
+    limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+    baseUrl: process.env.EMAIL_BASE_URL ?? `http://localhost:${port}`
+  };
+}
+
+function nextDailyCheckAt(time: string, now = new Date()): Date {
+  const match = time.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    throw new Error(`EMAIL_POLL_TIME must use HH:MM format, got: ${time}`);
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) {
+    throw new Error(`EMAIL_POLL_TIME must use HH:MM format, got: ${time}`);
+  }
+
+  const next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next;
+}
+
+function activeRunExists(): boolean {
+  return [...runs.values()].some((run) => run.status === "running");
+}
+
+async function logEmailPoll(message: string): Promise<void> {
+  await mkdir(dirname(emailPollLogPath), { recursive: true });
+  const line = `${new Date().toLocaleString()} ${message}\n`;
+  await appendFile(emailPollLogPath, line, "utf8");
+  console.log(`[email-poll] ${message}`);
+}
+
+function parseBoolean(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
 function pageHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -568,6 +764,11 @@ function pageHtml(): string {
     .file-icon.text { color:#5f6368; border-color:#c7ccd1; background:#f8fafd; }
     .file-actions { display:flex; gap:8px; flex:0 0 auto; }
     .file a { color:var(--accent); font-weight:700; text-decoration:none; }
+    .status-box { border:1px solid var(--line); border-radius:6px; padding:10px; background:#fff; }
+    .status-box h2 { font-size:14px; margin:0 0 8px; }
+    .status-box dl { margin:0; display:grid; gap:6px; }
+    .status-box dt { font-weight:700; color:var(--ink); }
+    .status-box dd { margin:0; color:var(--muted); overflow-wrap:anywhere; }
     @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } }
   </style>
 </head>
@@ -603,6 +804,15 @@ function pageHtml(): string {
         <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         <button id="run" disabled>Run Check</button>
         <button id="stop" class="danger" disabled>Stop Run</button>
+        <div class="status-box">
+          <h2>Email Polling</h2>
+          <dl>
+            <dt>Status</dt><dd id="emailPollEnabled">Loading</dd>
+            <dt>Last checked</dt><dd id="emailPollLastChecked">Loading</dd>
+            <dt>Last result</dt><dd id="emailPollLastResult">Loading</dd>
+            <dt>Next check</dt><dd id="emailPollNextCheck">Loading</dd>
+          </dl>
+        </div>
       </div>
     </aside>
     <section>
@@ -636,6 +846,13 @@ function pageHtml(): string {
     const bar = document.getElementById("bar");
     const progressMeta = document.getElementById("progressMeta");
     const autoScroll = document.getElementById("autoScroll");
+    const emailPollEnabled = document.getElementById("emailPollEnabled");
+    const emailPollLastChecked = document.getElementById("emailPollLastChecked");
+    const emailPollLastResult = document.getElementById("emailPollLastResult");
+    const emailPollNextCheck = document.getElementById("emailPollNextCheck");
+
+    refreshEmailPollStatus();
+    setInterval(refreshEmailPollStatus, 60000);
 
     uploadButton.addEventListener("click", async () => {
       const file = fileInput.files[0];
@@ -822,6 +1039,25 @@ function pageHtml(): string {
 
     function setStatus(message) {
       status.textContent = message;
+    }
+
+    async function refreshEmailPollStatus() {
+      try {
+        const response = await fetch("/email-poll/status");
+        const payload = await response.json();
+        emailPollEnabled.textContent = payload.enabled
+          ? "Enabled" + (payload.scheduledTime ? " at " + payload.scheduledTime : "")
+          : "Disabled";
+        emailPollLastChecked.textContent = formatDateTime(payload.lastCheckedAt) || "Never";
+        emailPollLastResult.textContent = payload.lastResult || "No checks yet.";
+        emailPollNextCheck.textContent = formatDateTime(payload.nextCheckAt) || "Not scheduled";
+      } catch {
+        emailPollEnabled.textContent = "Unavailable";
+      }
+    }
+
+    function formatDateTime(value) {
+      return value ? new Date(value).toLocaleString() : "";
     }
   </script>
 </body>

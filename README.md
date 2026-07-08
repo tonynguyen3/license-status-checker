@@ -167,7 +167,7 @@ If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usua
 
 ### Email Input Workbook
 
-The web interface can also check email for an input workbook. This is a manual button, not background polling, so the app will not automatically run just because an email arrives.
+The web interface can also check email for an input workbook. Use the `Check Email for Input File` button for a manual check, or configure the scheduled poller to check once per day and automatically start a run when it finds a matching unread workbook.
 
 Add IMAP settings to your local `.env`:
 
@@ -190,6 +190,28 @@ INPUT_EMAIL_SUBJECT_CONTAINS=License Status Input
 The email checker looks at unread messages in newest-first order, finds the first message that matches the optional sender/subject filters, and loads the matching Excel attachment. `INPUT_EMAIL_FROM` accepts a comma-separated sender list. `INPUT_EMAIL_ATTACHMENT_NAME` accepts comma-separated wildcard patterns. Use `*.xlsx` if you want to allow any Excel attachment.
 
 After a workbook is loaded from email, choose the worksheet/options and click `Run Check`. The email is marked read only after a matching workbook is loaded.
+
+### Scheduled Email Polling
+
+The web server can check email once per day at a configured local time. If it finds a matching unread workbook, it marks that message read, saves the workbook to a timestamped run folder, and starts the same run pipeline used by the web UI.
+
+Add these optional settings to `.env`:
+
+```text
+EMAIL_POLL_TIME=06:00
+EMAIL_POLL_WORKSHEET=Electricians
+EMAIL_POLL_LIMIT=50
+EMAIL_POLL_CHECK_DELAY_MS=3000
+EMAIL_POLL_HEADED=false
+```
+
+`EMAIL_POLL_TIME` uses 24-hour `HH:MM` time in the server's local timezone. Setting `EMAIL_POLL_TIME` enables the scheduler; `EMAIL_POLL_ENABLED=true` can also be set explicitly. Leave `EMAIL_POLL_WORKSHEET` or `EMAIL_POLL_LIMIT` blank to run all worksheets or all eligible rows.
+
+The web page shows the scheduler status, including the last checked time, last result, and next check time. The app also writes scheduled email polling activity to:
+
+```text
+Files/email-poll.log
+```
 
 ## Verify
 
