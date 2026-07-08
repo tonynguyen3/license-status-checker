@@ -135,6 +135,30 @@ http://localhost:3000
 
 The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
 
+### Email Results
+
+The web interface can email results after each run. Excel output files are attached to the email. Log files are included as links back to the local web server.
+
+Create a local `.env` file next to `package.json`:
+
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-email@gmail.com
+SMTP_PASSWORD="your app password"
+EMAIL_FROM=your-email@gmail.com
+EMAIL_RECIPIENTS=recipient@example.com
+```
+
+Optional:
+
+```text
+EMAIL_BASE_URL=http://localhost:3000
+```
+
+If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3000`. Keep the web server running if recipients need to open the log links.
+
 ## Verify
 
 ```bash

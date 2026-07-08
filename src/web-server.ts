@@ -3,8 +3,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
+import { emailConfigured, emailRunResults } from "./email.js";
+import { loadEnvFile } from "./env.js";
 import { runWashingtonCheck } from "./runner.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
+
+loadEnvFile();
 
 const port = Number(process.env.PORT ?? 3000);
 const rootDir = resolve("Files", "web-runs");
@@ -146,9 +150,10 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     onProgress: (update) => emit(run, update),
     isCanceled: () => run.cancelRequested
   })
-    .then((result) => {
+    .then(async (result) => {
       run.status = result.canceled ? "canceled" : "complete";
       run.outputPaths = result.outputPaths;
+      await maybeEmailResults(run, result, request);
       emit(run, {
         type: result.canceled ? "run_canceled" : "run_complete",
         message: result.canceled ? "Run stopped. Partial output files are ready." : "Run complete. Output files are ready.",
@@ -164,6 +169,46 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     });
 
   sendJson(response, 200, { runId });
+}
+
+async function maybeEmailResults(
+  run: WebRun,
+  result: Awaited<ReturnType<typeof runWashingtonCheck>>,
+  request: IncomingMessage
+): Promise<void> {
+  if (!emailConfigured()) {
+    emit(run, {
+      type: "email_skipped",
+      message: "Email results skipped because SMTP settings are not configured."
+    });
+    return;
+  }
+
+  emit(run, {
+    type: "email_sending",
+    message: "Emailing results."
+  });
+
+  try {
+    await emailRunResults({
+      outputPaths: result.outputPaths,
+      runId: run.id,
+      baseUrl: process.env.EMAIL_BASE_URL ?? requestBaseUrl(request),
+      canceled: result.canceled,
+      sendCount: result.sendCount,
+      doNotSendCount: result.doNotSendCount,
+      courseFrequencyCount: result.courseFrequencyCount
+    });
+    emit(run, {
+      type: "email_sent",
+      message: "Email results sent."
+    });
+  } catch (error) {
+    emit(run, {
+      type: "email_error",
+      message: `Email results could not be sent: ${error instanceof Error ? error.message : String(error)}`
+    });
+  }
 }
 
 function handleCancel(runId: string, response: ServerResponse): void {
@@ -330,6 +375,13 @@ function sendHtml(response: ServerResponse, html: string): void {
   response.end(html);
 }
 
+function requestBaseUrl(request: IncomingMessage): string {
+  const host = request.headers.host ?? `localhost:${port}`;
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  return `${proto ?? "http"}://${host}`;
+}
+
 function pageHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -398,7 +450,7 @@ function pageHtml(): string {
           <label for="limit">Website check limit</label>
           <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
         </div>
-        <label class="row"><input id="headed" type="checkbox"> Show browser window</label>
+        <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         <button id="run" disabled>Run Check</button>
         <button id="stop" class="danger" disabled>Stop Run</button>
       </div>
