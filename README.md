@@ -87,6 +87,8 @@ Generated output files are written to the output directory. By default, that is 
 - `work-items.jsonl`: durable queue of eligible spreadsheet rows created by the import stage.
 - `lookup-results.jsonl`: durable website lookup results written by the worker stage.
 - `course-frequencies.json`: durable course frequency data captured by the worker stage.
+- `worker-status.json`: durable worker state such as `queued`, `running`, `paused`, `rate_limited`, `completed`, or `failed`, plus heartbeat/counts.
+- `worker-control.json`: durable worker control flags, including pause requests from the UI.
 - `Send.csv`: pipe-delimited CSV report generated from stored lookup results.
 - `DoNotSend.csv`: pipe-delimited CSV report generated from stored lookup results.
 - `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits.
@@ -157,9 +159,11 @@ http://localhost:3000
 
 The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, set a pause between Washington website checks, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
 
-The `Previous Runs` page lists run folders, shows summary counts from `run-state.json`, groups resumed runs with the original run, and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
+The `Previous Runs` page lists run folders, shows summary counts from `run-state.json` and `worker-status.json`, groups resumed runs with the original run, and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
 
 Runs with durable `lookup-results.jsonl` data also show a `Regenerate Reports` button on the Previous Runs page. This rebuilds `Send.csv`, `DoNotSend.csv`, `Send-{date}.xlsx`, `DoNotSend-{date}.xlsx`, and course reports from stored lookup results without contacting Washington again.
+
+Runs with durable worker control files can also show `Pause Worker` or `Clear Pause` controls. `Pause Worker` writes a pause request to `worker-control.json`; the website worker sees that request between Washington checks and stops before starting the next license. `Clear Pause` removes the pause request so a later worker/resume run can continue. The worker also uses `worker.lock` internally so two worker processes do not consume the same run queue at the same time.
 
 If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
 
@@ -196,6 +200,8 @@ Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
     work-items.jsonl
     lookup-results.jsonl
     course-frequencies.json
+    worker-status.json
+    worker-control.json
     Send-{date}.xlsx
     DoNotSend-{date}.xlsx
     coursesAlreadyTaken.xlsx
@@ -205,7 +211,7 @@ Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
     run-state.json
 ```
 
-`run-state.json` records the run phase, counts, output file paths, run options, and the most recent checked license checkpoint. This file is what the Previous Runs page uses to show summaries and decide whether a run can be resumed.
+`run-state.json` records the run phase, counts, output file paths, run options, and the most recent checked license checkpoint. `worker-status.json` records the website worker status, heartbeat time, remaining count, and worker error count. These files are what the Previous Runs page uses to show summaries and decide whether a run can be resumed.
 
 If a run is canceled, rate-limited, or fails after at least one license was checked, the Previous Runs page shows a `Resume` button. Resuming creates a new run folder, copies the original `ListToCheck.xlsx`, reuses the stored run options, streams the workbook again, skips eligible rows through the last checked license checkpoint, and continues with the next eligible row.
 

@@ -1,7 +1,7 @@
 import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
-import { PipelineStore } from "./pipeline-store.js";
+import { PipelineStore, type WorkItem } from "./pipeline-store.js";
 import { buildOutputPaths } from "./paths.js";
 import { RunStateWriter } from "./run-state.js";
 import {
@@ -309,48 +309,128 @@ function findCheckpointWorkItemId(workItems: { id: number; tradesman: Tradesman 
 
 async function processLookupQueue(context: RunContext): Promise<LookupStageResult> {
   const { options, outputPaths, store, logger, runState, reportProgress } = context;
-  const workItems = await store.readWorkItems();
-  const existingResults = await store.readLookupResults();
-  const completedIds = new Set(existingResults.map((result) => result.workItemId).filter((id): id is number => id !== undefined));
-  const remainingWorkItems = workItems.filter((item) => !completedIds.has(item.id));
-  reportProgress({
-    type: "lookup_started",
-    message: `Stage 2 of 3: processing ${remainingWorkItems.length} queued website lookup item(s).`,
-    current: 0,
-    total: remainingWorkItems.length,
-    remaining: remainingWorkItems.length
-  });
-
+  await store.acquireWorkerLock();
+  const startedAt = new Date().toISOString();
+  let remainingWorkItems: WorkItem[] = [];
+  let workerStatus: "running" | "paused" | "rate_limited" | "completed" | "failed" = "running";
   let sendCount = 0;
   let doNotSendCount = 0;
-  const checker = new WashingtonLicenseChecker(logger, outputPaths, {
-    headed: options.headed,
-    slowMo: options.slowMo,
-    checkDelayMs: options.checkDelayMs ?? 1500,
-    limit: options.limit,
-    onProgress: reportProgress,
-    onResult: async (checkedResult: BucketedResult) => {
-      await store.appendLookupResult(checkedResult);
-      if (checkedResult.bucket === "send") {
-        sendCount++;
-      } else {
-        doNotSendCount++;
-      }
-      await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
-    },
-    isCanceled: options.isCanceled
-  });
+  let errorCount = 0;
+  let rateLimited = false;
 
-  const result = await checker.checkLicenses(remainingWorkItems.map((item) => item.tradesman));
-  await store.writeCourseFrequencies(result.courseFrequencies);
+  try {
+    const workItems = await store.readWorkItems();
+    const existingResults = await store.readLookupResults();
+    const completedIds = new Set(existingResults.map((result) => result.workItemId).filter((id): id is number => id !== undefined));
+    remainingWorkItems = workItems.filter((item) => !completedIds.has(item.id));
+    workerStatus = store.isPauseRequested() ? "paused" : "running";
+    await store.writeWorkerStatus({
+      status: workerStatus,
+      pid: process.pid,
+      startedAt,
+      heartbeatAt: startedAt,
+      checked: 0,
+      remaining: remainingWorkItems.length,
+      errors: 0,
+      message: workerStatus === "paused" ? "Worker is paused before starting website lookups." : "Worker started."
+    });
 
-  return {
-    sendCount,
-    doNotSendCount,
-    errorCount: 0,
-    courseFrequencies: result.courseFrequencies,
-    canceled: result.canceled
-  };
+    if (workerStatus === "paused") {
+      return {
+        sendCount: 0,
+        doNotSendCount: 0,
+        errorCount: 0,
+        courseFrequencies: [],
+        canceled: true
+      };
+    }
+
+    reportProgress({
+      type: "lookup_started",
+      message: `Stage 2 of 3: processing ${remainingWorkItems.length} queued website lookup item(s).`,
+      current: 0,
+      total: remainingWorkItems.length,
+      remaining: remainingWorkItems.length
+    });
+
+    const checker = new WashingtonLicenseChecker(logger, outputPaths, {
+      headed: options.headed,
+      slowMo: options.slowMo,
+      checkDelayMs: options.checkDelayMs ?? 1500,
+      limit: options.limit,
+      onProgress: (update) => {
+        reportProgress(update);
+        if (update.errorCount !== undefined) errorCount = update.errorCount;
+        if (update.type === "rate_limited") {
+          rateLimited = true;
+          workerStatus = "rate_limited";
+        }
+        void store.writeWorkerStatus({
+          status: workerStatus,
+          pid: process.pid,
+          startedAt,
+          heartbeatAt: new Date().toISOString(),
+          checked: update.current ?? 0,
+          remaining: update.remaining ?? 0,
+          errors: update.errorCount ?? errorCount,
+          message: update.message
+        });
+      },
+      onResult: async (checkedResult: BucketedResult) => {
+        await store.appendLookupResult(checkedResult);
+        if (checkedResult.bucket === "send") {
+          sendCount++;
+        } else {
+          doNotSendCount++;
+        }
+        await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
+      },
+      isCanceled: () => options.isCanceled?.() === true || store.isPauseRequested()
+    });
+
+    const result = await checker.checkLicenses(remainingWorkItems.map((item) => item.tradesman));
+    if (store.isPauseRequested() && result.canceled) {
+      workerStatus = "paused";
+    } else if (rateLimited) {
+      workerStatus = "rate_limited";
+    } else {
+      workerStatus = result.canceled ? "paused" : "completed";
+    }
+    await store.writeCourseFrequencies(result.courseFrequencies);
+    await store.writeWorkerStatus({
+      status: workerStatus,
+      pid: process.pid,
+      startedAt,
+      heartbeatAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      checked: sendCount + doNotSendCount + errorCount,
+      remaining: result.canceled ? Math.max(0, remainingWorkItems.length - (sendCount + doNotSendCount + errorCount)) : 0,
+      errors: errorCount,
+      message: workerStatus === "completed" ? "Worker completed queued website lookups." : "Worker stopped before completing all queued lookups."
+    });
+
+    return {
+      sendCount,
+      doNotSendCount,
+      errorCount,
+      courseFrequencies: result.courseFrequencies,
+      canceled: result.canceled
+    };
+  } catch (error) {
+    await store.writeWorkerStatus({
+      status: "failed",
+      pid: process.pid,
+      heartbeatAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      checked: sendCount + doNotSendCount + errorCount,
+      remaining: Math.max(0, remainingWorkItems.length - (sendCount + doNotSendCount + errorCount)),
+      errors: errorCount,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  } finally {
+    await store.releaseWorkerLock();
+  }
 }
 
 async function generateReports(context: RunContext, lookupResult: LookupStageResult): Promise<ReportStageResult> {

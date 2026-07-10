@@ -7,6 +7,7 @@ import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
+import { PipelineStore, type WorkerStatus } from "./pipeline-store.js";
 import { buildOutputPaths } from "./paths.js";
 import type { DurableRunState } from "./run-state.js";
 import { regenerateReportsFromStore, runWashingtonCheck } from "./runner.js";
@@ -154,6 +155,18 @@ const server = createServer(async (request, response) => {
     const regenerateMatch = url.pathname.match(/^\/runs\/([^/]+)\/regenerate-reports$/);
     if (request.method === "POST" && regenerateMatch) {
       await handleRegenerateReports(regenerateMatch[1], response);
+      return;
+    }
+
+    const pauseWorkerMatch = url.pathname.match(/^\/runs\/([^/]+)\/worker\/pause$/);
+    if (request.method === "POST" && pauseWorkerMatch) {
+      await handleWorkerPause(pauseWorkerMatch[1], response);
+      return;
+    }
+
+    const resumeWorkerMatch = url.pathname.match(/^\/runs\/([^/]+)\/worker\/resume$/);
+    if (request.method === "POST" && resumeWorkerMatch) {
+      await handleWorkerResume(resumeWorkerMatch[1], response);
       return;
     }
 
@@ -608,6 +621,32 @@ async function handleRegenerateReports(runId: string, response: ServerResponse):
   });
 }
 
+async function handleWorkerPause(runId: string, response: ServerResponse): Promise<void> {
+  const outputPaths = await outputPathsForRun(runId);
+  if (!outputPaths) {
+    sendJson(response, 404, { error: "Run output is not available." });
+    return;
+  }
+
+  const store = new PipelineStore(outputPaths);
+  await store.requestPause();
+  const status = await store.readWorkerStatus();
+  sendJson(response, 200, { paused: true, status });
+}
+
+async function handleWorkerResume(runId: string, response: ServerResponse): Promise<void> {
+  const outputPaths = await outputPathsForRun(runId);
+  if (!outputPaths) {
+    sendJson(response, 404, { error: "Run output is not available." });
+    return;
+  }
+
+  const store = new PipelineStore(outputPaths);
+  await store.clearPause();
+  const status = await store.readWorkerStatus();
+  sendJson(response, 200, { paused: false, status });
+}
+
 async function handleDeleteRun(runId: string, response: ServerResponse): Promise<void> {
   const run = runs.get(runId);
   if (run?.status === "running") {
@@ -757,6 +796,8 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
     workItems: outputPaths.workItemsPath,
     lookupResults: outputPaths.lookupResultsPath,
     courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
+    workerStatus: outputPaths.workerStatusPath,
+    workerControl: outputPaths.workerControlPath,
     coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
     expired: outputPaths.expiredLogPath,
     greaterThan90: outputPaths.greaterThan90LogPath,
@@ -788,6 +829,9 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
     workItemsPath: join(outputDir, "work-items.jsonl"),
     lookupResultsPath: join(outputDir, "lookup-results.jsonl"),
     courseFrequenciesJsonPath: join(outputDir, "course-frequencies.json"),
+    workerStatusPath: join(outputDir, "worker-status.json"),
+    workerControlPath: join(outputDir, "worker-control.json"),
+    workerLockPath: join(outputDir, "worker.lock"),
     coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: join(outputDir, "expired.txt"),
     greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
@@ -855,6 +899,8 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
       workItems: outputPaths.workItemsPath,
       lookupResults: outputPaths.lookupResultsPath,
       courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
+      workerStatus: outputPaths.workerStatusPath,
+      workerControl: outputPaths.workerControlPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -874,6 +920,8 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
       workItems: outputPaths.workItemsPath,
       lookupResults: outputPaths.lookupResultsPath,
       courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
+      workerStatus: outputPaths.workerStatusPath,
+      workerControl: outputPaths.workerControlPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -905,6 +953,7 @@ async function readRunStateSummary(path: string): Promise<PreviousRunStateSummar
   const state = await readRunState(path);
   if (!state) return undefined;
   const exceptionSummary = await readExceptionSummary(path);
+  const workerStatus = await readWorkerStatusSummary(path);
 
   return {
     phase: state.phase,
@@ -924,8 +973,17 @@ async function readRunStateSummary(path: string): Promise<PreviousRunStateSummar
     lastError: state.lastError ?? exceptionSummary.lastError,
     error: state.error,
     resumeAfterLicenseNumber: state.runOptions?.resumeAfterLicenseNumber,
-    resumedFromRunId: state.runOptions?.resumedFromRunId
+    resumedFromRunId: state.runOptions?.resumedFromRunId,
+    workerStatus
   };
+}
+
+async function readWorkerStatusSummary(runStatePath: string): Promise<WorkerStatus | undefined> {
+  try {
+    return JSON.parse(await readFile(join(dirname(runStatePath), "worker-status.json"), "utf8")) as WorkerStatus;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readExceptionSummary(runStatePath: string): Promise<{ count: number; lastError?: string; rateLimited: boolean }> {
@@ -1559,6 +1617,8 @@ function pageHtml(): string {
         workItems: "Work queue",
         lookupResults: "Lookup results",
         courseFrequenciesJson: "Course frequency data",
+        workerStatus: "Worker status",
+        workerControl: "Worker control",
         coursesAlreadyTaken: "Course frequency workbook",
         expired: "Expired log",
         greaterThan90: "Greater-than-90 log",
@@ -1913,6 +1973,7 @@ interface PreviousRunStateSummary {
   error?: string;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
+  workerStatus?: WorkerStatus;
 }
 
 function runsHtml(runSummaries: PreviousRunSummary[]): string {
@@ -1955,6 +2016,8 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
     button:hover { background:var(--panel); border-color:var(--gold); }
     .resume-run { color:var(--accent-strong); }
+    .pause-worker { color:var(--danger); }
+    .clear-pause { color:var(--accent-strong); }
     .regenerate-run { color:var(--ok); }
     .delete-run { color:var(--danger); }
     .delete-run:disabled { cursor:not-allowed; opacity:.65; }
@@ -2020,6 +2083,31 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
           alert(error instanceof Error ? error.message : String(error));
           button.disabled = false;
           button.textContent = "Regenerate Reports";
+        }
+      });
+    });
+
+    document.querySelectorAll(".pause-worker, .clear-pause").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runId = button.dataset.runId;
+        const action = button.dataset.action;
+        if (!runId || !action) return;
+
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = action === "pause" ? "Pausing..." : "Clearing...";
+
+        try {
+          const response = await fetch("/runs/" + encodeURIComponent(runId) + "/worker/" + action, { method: "POST" });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.error || "Could not update worker control.");
+          }
+          window.location.reload();
+        } catch (error) {
+          alert(error instanceof Error ? error.message : String(error));
+          button.disabled = false;
+          button.textContent = label;
         }
       });
     });
@@ -2172,12 +2260,15 @@ function runHtml(run: PreviousRunSummary, isResumed = false): string {
           ${runFileLink(run.files.workItems)}
           ${runFileLink(run.files.lookupResults)}
           ${runFileLink(run.files.courseFrequenciesJson)}
+          ${runFileLink(run.files.workerStatus)}
+          ${runFileLink(run.files.workerControl)}
           ${runFileLink(run.files.expired)}
           ${runFileLink(run.files.greaterThan90)}
           ${runFileLink(run.files.exception)}
           ${runFileLink(run.files.runState)}
         </div>
         ${regenerateRunButton(run)}
+        ${workerControlButtons(run)}
         ${resumeRunButton(run)}
         <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>
@@ -2201,6 +2292,18 @@ function regenerateRunButton(run: PreviousRunSummary): string {
   return `<button type="button" class="regenerate-run" data-run-id="${escapeHtml(run.id)}">Regenerate Reports</button>`;
 }
 
+function workerControlButtons(run: PreviousRunSummary): string {
+  if (!run.files.workerControl) return "";
+  const status = run.state?.workerStatus?.status;
+  const pauseButton = status === "queued" || status === "running"
+    ? `<button type="button" class="pause-worker" data-action="pause" data-run-id="${escapeHtml(run.id)}">Pause Worker</button>`
+    : "";
+  const clearPauseButton = status === "paused" || status === "rate_limited"
+    ? `<button type="button" class="clear-pause" data-action="resume" data-run-id="${escapeHtml(run.id)}">Clear Pause</button>`
+    : "";
+  return `${pauseButton}${clearPauseButton}`;
+}
+
 function runStateSummary(state: PreviousRunStateSummary | undefined): string {
   if (!state) return "";
 
@@ -2209,10 +2312,14 @@ function runStateSummary(state: PreviousRunStateSummary | undefined): string {
   const message = state.error || state.lastError || state.lastMessage;
   const resumeHint = state.canResume ? `<p class="run-message">This run can be resumed. Click Resume to continue from the last checked license.</p>` : "";
   const eligible = state.eligible > 0 || state.checked === 0 ? String(state.eligible) : "unknown";
+  const worker = state.workerStatus;
+  const workerFinished = worker?.completedAt ? `<span>Worker finished: ${escapeHtml(formatDateTime(worker.completedAt))}</span>` : "";
+  const workerHeartbeat = worker?.heartbeatAt ? `<span>Worker heartbeat: ${escapeHtml(formatDateTime(worker.heartbeatAt))}</span>` : "";
 
   return `
     <div class="run-state">
       <span>Phase: ${escapeHtml(state.phase)}</span>
+      ${worker ? `<span>Worker: ${escapeHtml(worker.status)}</span>` : ""}
       <span>Canceled: ${state.canceled ? "yes" : "no"}</span>
       <span>Can resume: ${state.canResume ? "yes" : "no"}</span>
       ${state.rateLimited ? "<span>Rate limited: yes</span>" : ""}
@@ -2221,7 +2328,11 @@ function runStateSummary(state: PreviousRunStateSummary | undefined): string {
       <span>Send: ${state.send}</span>
       <span>Do not send: ${state.doNotSend}</span>
       <span>Errors: ${state.errors}</span>
+      ${worker ? `<span>Worker remaining: ${worker.remaining}</span>` : ""}
+      ${worker ? `<span>Worker errors: ${worker.errors}</span>` : ""}
       ${lastLicense}
+      ${workerHeartbeat}
+      ${workerFinished}
       ${finishedAt}
     </div>
     ${message ? `<p class="run-message${state.error ? " run-error" : ""}">${escapeHtml(message)}</p>` : ""}

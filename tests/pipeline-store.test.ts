@@ -89,4 +89,48 @@ describe("PipelineStore", () => {
       expect.objectContaining({ licenseNumber: "EL-NO", notSendReason: "Already renewed" })
     ]);
   });
+
+  it("persists worker status, pause control, and a single worker lock", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const store = new PipelineStore(outputPaths);
+
+    await store.initialize();
+    await expect(store.readWorkerStatus()).resolves.toEqual({
+      status: "queued",
+      checked: 0,
+      remaining: 0,
+      errors: 0
+    });
+
+    await store.requestPause();
+    expect(store.isPauseRequested()).toBe(true);
+
+    await store.clearPause();
+    expect(store.isPauseRequested()).toBe(false);
+
+    await store.writeWorkerStatus({
+      status: "running",
+      pid: 123,
+      startedAt: "2026-07-06T00:00:00.000Z",
+      heartbeatAt: "2026-07-06T00:00:01.000Z",
+      checked: 5,
+      remaining: 10,
+      errors: 1,
+      message: "Working"
+    });
+    await expect(store.readWorkerStatus()).resolves.toEqual(expect.objectContaining({
+      status: "running",
+      checked: 5,
+      remaining: 10,
+      errors: 1,
+      message: "Working"
+    }));
+
+    await store.acquireWorkerLock();
+    await expect(store.acquireWorkerLock()).rejects.toThrow(/worker lock already exists/i);
+    await store.releaseWorkerLock();
+    await expect(store.acquireWorkerLock()).resolves.toBeUndefined();
+    await store.releaseWorkerLock();
+  });
 });

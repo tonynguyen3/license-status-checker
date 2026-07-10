@@ -49,6 +49,9 @@ export interface OutputPaths {
   workItemsPath: string;
   lookupResultsPath: string;
   courseFrequenciesJsonPath: string;
+  workerStatusPath: string;
+  workerControlPath: string;
+  workerLockPath: string;
   coursesAlreadyTakenPath: string;
   expiredLogPath: string;
   greaterThan90LogPath: string;
