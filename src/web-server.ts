@@ -1194,6 +1194,17 @@ function pageHtml(): string {
     .meta { color:var(--muted); font-size:13px; line-height:1.4; }
     .progress { margin:0 0 18px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
+    .stage-flow { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; margin:16px 0 10px; }
+    .stage { border:1px solid var(--line); border-radius:6px; padding:10px; background:#fff; min-width:0; position:relative; }
+    .stage::before { content:""; position:absolute; top:0; left:0; right:0; height:4px; background:#d9e1dd; border-radius:6px 6px 0 0; }
+    .stage strong { display:block; font-size:13px; margin:0 0 4px; color:var(--ink); }
+    .stage span { display:block; color:var(--muted); font-size:12px; line-height:1.35; overflow-wrap:anywhere; }
+    .stage.pending { opacity:.72; }
+    .stage.active { border-color:var(--gold); box-shadow:0 0 0 2px rgba(246,190,0,.18); }
+    .stage.active::before { background:var(--gold); }
+    .stage.done::before { background:var(--ok); }
+    .stage.error::before { background:var(--danger); }
+    .stage.error strong { color:var(--danger); }
     .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#fff; }
     .feed div { padding:5px 0; border-bottom:1px solid #f1f3f4; }
     .files { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:14px; }
@@ -1213,7 +1224,7 @@ function pageHtml(): string {
     .status-actions { display:flex; gap:8px; margin-top:10px; }
     .status-actions button { flex:1; }
     button.secondary { background:#5f6368; }
-    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } }
+    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .stage-flow { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -1270,6 +1281,11 @@ function pageHtml(): string {
     <section>
       <div class="progress"><div class="bar" id="bar"></div></div>
       <div class="meta" id="progressMeta">No run started.</div>
+      <div class="stage-flow" aria-label="Run stages">
+        <div class="stage pending" id="stageImport"><strong>Import</strong><span>Waiting for workbook.</span></div>
+        <div class="stage pending" id="stageLookup"><strong>Website Lookup</strong><span>Waiting for queued work.</span></div>
+        <div class="stage pending" id="stageReports"><strong>Reports</strong><span>Waiting for lookup results.</span></div>
+      </div>
       <div class="toolbar">
         <h2>Progress</h2>
         <label class="row"><input id="autoScroll" type="checkbox" checked> Auto-scroll while running</label>
@@ -1297,6 +1313,9 @@ function pageHtml(): string {
     const uploadMeta = document.getElementById("uploadMeta");
     const bar = document.getElementById("bar");
     const progressMeta = document.getElementById("progressMeta");
+    const stageImport = document.getElementById("stageImport");
+    const stageLookup = document.getElementById("stageLookup");
+    const stageReports = document.getElementById("stageReports");
     const autoScroll = document.getElementById("autoScroll");
     const emailPollEnabled = document.getElementById("emailPollEnabled");
     const emailPollLastChecked = document.getElementById("emailPollLastChecked");
@@ -1340,6 +1359,7 @@ function pageHtml(): string {
       feed.innerHTML = "";
       files.innerHTML = "";
       bar.style.width = "0%";
+      resetStages();
       state.isRunning = true;
       state.currentRunId = null;
       state.stopRequested = false;
@@ -1415,6 +1435,7 @@ function pageHtml(): string {
       state.currentRunId = monitorRunId;
       state.stopRequested = false;
       setBusy(true);
+      resetStages();
       connect(monitorRunId);
       setStatus("Monitoring run " + monitorRunId + ".");
     } else {
@@ -1427,6 +1448,7 @@ function pageHtml(): string {
       state.eventSource.onmessage = (event) => {
         const update = JSON.parse(event.data);
         append(update.message);
+        updateStageFlow(update);
         if (update.total) {
           const pct = Math.round(((update.current || 0) / update.total) * 100);
           bar.style.width = Math.max(0, Math.min(100, pct)) + "%";
@@ -1438,9 +1460,11 @@ function pageHtml(): string {
         }
         if (update.files && (update.type === "run_complete" || update.type === "run_canceled")) {
           renderFiles(update.files);
+          updateStageFlow({ type: update.type === "run_canceled" ? "run_canceled" : "run_complete", message: update.message });
           state.isRunning = false;
           state.currentRunId = null;
           state.stopRequested = false;
+          updateStageFlow(update);
           closeProgressStream();
           setBusy(false);
           setStatus(update.type === "run_canceled" ? "Run stopped." : "Run complete.");
@@ -1563,6 +1587,7 @@ function pageHtml(): string {
 
       bar.style.width = Math.max(0, Math.min(100, percent)) + "%";
       progressMeta.textContent = latestRunMeta(payload.status, counts, payload.message);
+      renderStageSnapshot(counts);
       feed.innerHTML = "";
       append("Latest run " + payload.id + " loaded from saved run state.");
       append(progressMeta.textContent);
@@ -1595,6 +1620,82 @@ function pageHtml(): string {
 
     function eligibleLabel(counts) {
       return counts.eligible > 0 || counts.checked === 0 ? String(counts.eligible) : "unknown";
+    }
+
+    function resetStages() {
+      setStage(stageImport, "pending", "Import", "Waiting for workbook.");
+      setStage(stageLookup, "pending", "Website Lookup", "Waiting for queued work.");
+      setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+    }
+
+    function updateStageFlow(update) {
+      if (["import_started", "spreadsheet_loading", "worksheet_started", "spreadsheet_row"].includes(update.type)) {
+        setStage(stageImport, "active", "Import", update.message);
+        setStage(stageLookup, "pending", "Website Lookup", "Waiting for queued work.");
+        setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+      } else if (["spreadsheet_complete", "import_complete"].includes(update.type)) {
+        setStage(stageImport, "done", "Import", update.message);
+        setStage(stageLookup, "pending", "Website Lookup", "Queued work is ready.");
+      } else if (["lookup_started", "checks_started", "checks_progress", "website_check_error"].includes(update.type)) {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, update.type === "website_check_error" ? "active" : "active", "Website Lookup", update.message);
+        setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+      } else if (update.type === "rate_limited" || update.type === "checks_canceled" || update.type === "run_canceled") {
+        setStage(stageImport, "done", "Import", "Queued work is saved.");
+        setStage(stageLookup, "error", "Website Lookup", update.message);
+        setStage(stageReports, "pending", "Reports", "Partial reports may be available.");
+      } else if (update.type === "checks_complete") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "done", "Website Lookup", update.message);
+        setStage(stageReports, "pending", "Reports", "Waiting to generate files.");
+      } else if (update.type === "reports_started") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "done", "Website Lookup", "Lookup results are saved.");
+        setStage(stageReports, "active", "Reports", update.message);
+      } else if (update.type === "reports_complete" || update.type === "run_complete") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "done", "Website Lookup", "Lookup results are saved.");
+        setStage(stageReports, "done", "Reports", update.message);
+      } else if (update.type === "run_error") {
+        setStage(stageReports, "error", "Reports", update.message);
+      }
+    }
+
+    function renderStageSnapshot(counts) {
+      const phase = counts.phase || "";
+      if (phase === "complete") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "done", "Website Lookup", "Lookup results are saved.");
+        setStage(stageReports, "done", "Reports", "Output files are ready.");
+      } else if (phase === "canceled" || counts.rateLimited) {
+        setStage(stageImport, "done", "Import", "Queued work is saved.");
+        setStage(stageLookup, "error", "Website Lookup", counts.rateLimited ? "Washington rate limit detected." : "Run was stopped.");
+        setStage(stageReports, counts.checked > 0 ? "done" : "pending", "Reports", counts.checked > 0 ? "Partial output files are ready." : "No lookup results yet.");
+      } else if (phase === "writing_outputs") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "done", "Website Lookup", "Lookup results are saved.");
+        setStage(stageReports, "active", "Reports", "Generating output files.");
+      } else if (phase === "checking") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "active", "Website Lookup", "Checking Washington website.");
+        setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+      } else if (phase === "queued") {
+        setStage(stageImport, "done", "Import", "Queued work is ready.");
+        setStage(stageLookup, "pending", "Website Lookup", "Waiting to start.");
+        setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+      } else if (phase === "importing" || phase === "reading") {
+        setStage(stageImport, "active", "Import", "Reading workbook.");
+        setStage(stageLookup, "pending", "Website Lookup", "Waiting for queued work.");
+        setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
+      } else {
+        resetStages();
+      }
+    }
+
+    function setStage(element, stateName, title, detail) {
+      element.className = "stage " + stateName;
+      element.querySelector("strong").textContent = title;
+      element.querySelector("span").textContent = detail || "";
     }
 
     function append(message) {
