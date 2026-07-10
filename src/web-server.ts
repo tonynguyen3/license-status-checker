@@ -11,6 +11,7 @@ import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { PipelineStore } from "./pipeline-store.js";
 import type { WorkerStatus } from "./pipeline-storage.js";
 import { buildOutputPaths } from "./paths.js";
+import { ReportRepository, type LookupResultFilter } from "./report-repository.js";
 import type { DurableRunState } from "./run-state.js";
 import { regenerateReportsFromStore, runWashingtonCheck } from "./runner.js";
 import { readTradesmenWorkbook, writeTradesmenWorkbook } from "./spreadsheet.js";
@@ -182,6 +183,12 @@ const server = createServer(async (request, response) => {
     const combinedMatch = url.pathname.match(/^\/runs\/([^/]+)\/combined\/(send|doNotSend)$/);
     if (request.method === "GET" && combinedMatch) {
       await handleCombinedRunWorkbook(combinedMatch[1], combinedMatch[2] as CombinedWorkbookKind, response);
+      return;
+    }
+
+    const reportMatch = url.pathname.match(/^\/runs\/([^/]+)\/report$/);
+    if (request.method === "GET" && reportMatch) {
+      await handleRunReport(reportMatch[1], url, response);
       return;
     }
 
@@ -590,6 +597,32 @@ async function handleCombinedRunWorkbook(
   }
 }
 
+async function handleRunReport(runId: string, url: URL, response: ServerResponse): Promise<void> {
+  const outputPaths = await outputPathsForRun(runId);
+  if (!outputPaths) {
+    sendJson(response, 404, { error: "Run output is not available." });
+    return;
+  }
+
+  if (!(await artifactStore.fileExists(outputPaths.lookupResultsPath))) {
+    sendJson(response, 404, { error: "This run does not have durable lookup results yet." });
+    return;
+  }
+
+  const reports = new ReportRepository(outputPaths);
+  const filter = reportFilterFromSearchParams(url.searchParams);
+  const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") ?? 100)));
+  const results = await reports.listResults(filter);
+  sendJson(response, 200, {
+    runId,
+    filter,
+    summary: await reports.summary(filter),
+    results: results.slice(0, limit),
+    limit,
+    returned: Math.min(results.length, limit)
+  });
+}
+
 async function handleRegenerateReports(runId: string, response: ServerResponse): Promise<void> {
   const activeRun = runs.get(runId);
   if (activeRun?.status === "running") {
@@ -615,6 +648,17 @@ async function handleRegenerateReports(runId: string, response: ServerResponse):
     ...result,
     files: fileLinks(runId, outputPaths)
   });
+}
+
+function reportFilterFromSearchParams(searchParams: URLSearchParams): LookupResultFilter {
+  const bucket = searchParams.get("bucket");
+  return {
+    bucket: bucket === "send" || bucket === "doNotSend" ? bucket : undefined,
+    worksheet: searchParams.get("worksheet") || undefined,
+    licenseType: searchParams.get("licenseType") || undefined,
+    trade: searchParams.get("trade") || undefined,
+    reasonContains: searchParams.get("reasonContains") || undefined
+  };
 }
 
 async function handleWorkerPause(runId: string, response: ServerResponse): Promise<void> {
@@ -2201,6 +2245,7 @@ function runHtml(run: PreviousRunSummary, isResumed = false): string {
           ${runFileLink(run.files.coursesAlreadyTaken)}
           ${runFileLink(run.files.workItems)}
           ${runFileLink(run.files.lookupResults)}
+          ${runReportLink(run)}
           ${runFileLink(run.files.courseFrequenciesJson)}
           ${runFileLink(run.files.workerStatus)}
           ${runFileLink(run.files.workerControl)}
@@ -2284,6 +2329,10 @@ function runStateSummary(state: PreviousRunStateSummary | undefined): string {
 
 function runFileLink(file: FileLink | undefined): string {
   return file ? `<a href="${file.href}">${escapeHtml(file.label)}</a>` : "";
+}
+
+function runReportLink(run: PreviousRunSummary): string {
+  return run.files.lookupResults ? `<a href="/runs/${encodeURIComponent(run.id)}/report">Report summary</a>` : "";
 }
 
 function escapeHtml(value: string): string {

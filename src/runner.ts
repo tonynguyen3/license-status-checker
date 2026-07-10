@@ -4,6 +4,7 @@ import { Logger } from "./logger.js";
 import { PipelineStore } from "./pipeline-store.js";
 import type { PipelineStorage, WorkItem } from "./pipeline-storage.js";
 import { buildOutputPaths } from "./paths.js";
+import { ReportRepository } from "./report-repository.js";
 import { RunStateWriter } from "./run-state.js";
 import {
   readEligibleTradesmen,
@@ -524,9 +525,10 @@ export async function regenerateReportsFromStore(
   fallbackCourseFrequencies: CourseFrequency[] = []
 ): Promise<ReportStageResult & { lookupResultCount: number }> {
   const store = new PipelineStore(outputPaths);
-  const results = await store.readLookupResults();
-  const sendTradesmen = results.filter((result) => result.bucket === "send").map((result) => result.tradesman);
-  const doNotSendTradesmen = results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman);
+  const reports = new ReportRepository(outputPaths);
+  const summary = await reports.summary();
+  const sendTradesmen = await reports.listTradesmen({ bucket: "send" });
+  const doNotSendTradesmen = await reports.listTradesmen({ bucket: "doNotSend" });
   const courseFrequencies = await store.readCourseFrequencies();
   const courses = courseFrequencies.length > 0 ? courseFrequencies : fallbackCourseFrequencies;
 
@@ -539,10 +541,10 @@ export async function regenerateReportsFromStore(
   ]);
 
   return {
-    sendCount: sendTradesmen.length,
-    doNotSendCount: doNotSendTradesmen.length,
+    sendCount: summary.send,
+    doNotSendCount: summary.doNotSend,
     courseFrequencyCount: courses.length,
-    lookupResultCount: results.length
+    lookupResultCount: summary.total
   };
 }
 

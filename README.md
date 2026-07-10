@@ -189,6 +189,15 @@ That keeps local runs simple while leaving clear places to add Azure Queue/Blob/
 
 The work queue also uses resumable item leasing. Work items move through `queued`, `in_progress`, `completed`, and `failed` states. A worker claims one queued item at a time, marks it complete after writing a lookup result, marks it failed when a website check fails, releases stale `in_progress` claims on the next worker start, and requeues failed items for later retry until the attempt cap is reached. This mirrors how a cloud queue worker would claim, heartbeat, retry, and complete messages.
 
+Reporting now has a read-model layer as well. `ReportRepository` reads durable lookup results and can summarize or filter them by bucket, worksheet, license type, trade, and not-send reason. The Previous Runs page links to a JSON report endpoint for each run:
+
+```text
+/runs/{runId}/report
+/runs/{runId}/report?bucket=send&worksheet=Electricians&limit=100
+```
+
+This endpoint is intended to power future browser-viewable report tables while keeping CSV/XLSX generation available for downloads and email attachments.
+
 Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
 
 The default `npm start` command still runs all stages end-to-end. For cloud-style operation, the stages can also be run separately against the same output directory:
