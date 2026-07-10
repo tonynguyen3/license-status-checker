@@ -145,9 +145,39 @@ http://localhost:3000
 
 The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, set a pause between Washington website checks, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
 
-The `Previous Runs` page lists completed run folders and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
+The `Previous Runs` page lists run folders, shows summary counts from `run-state.json`, groups resumed runs with the original run, and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
 
 If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
+
+### Streaming And Resume Behavior
+
+The web run pipeline is designed to be friendlier to cloud or small-VM hosting:
+
+- spreadsheet rows are streamed from the input workbook instead of loading every row into memory at once
+- output workbooks are written incrementally as each license result is bucketed
+- run progress is persisted to `run-state.json` inside each run's output folder
+- the UI progress feed is summarized so it does not emit every row to the browser
+
+Each web upload or email-loaded workbook is stored under a timestamped run folder:
+
+```text
+Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
+  ListToCheck.xlsx
+  output/
+    Send-{date}.xlsx
+    DoNotSend-{date}.xlsx
+    coursesAlreadyTaken.xlsx
+    expired.txt
+    greaterThan90.txt
+    exception.txt
+    run-state.json
+```
+
+`run-state.json` records the run phase, counts, output file paths, run options, and the most recent checked license checkpoint. This file is what the Previous Runs page uses to show summaries and decide whether a run can be resumed.
+
+If a run is canceled, rate-limited, or fails after at least one license was checked, the Previous Runs page shows a `Resume` button. Resuming creates a new run folder, copies the original `ListToCheck.xlsx`, reuses the stored run options, streams the workbook again, skips eligible rows through the last checked license checkpoint, and continues with the next eligible row.
+
+Resumed runs do not append into the original output files. They write their own output files in their own run folder. The Previous Runs page groups the original run and resumed runs together so the chain is visible, but combined exports are not merged yet.
 
 ### Email Results
 
