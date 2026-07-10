@@ -7,6 +7,7 @@ import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
+import { buildOutputPaths } from "./paths.js";
 import type { DurableRunState } from "./run-state.js";
 import { runWashingtonCheck } from "./runner.js";
 import { readTradesmenWorkbook, writeTradesmenWorkbook } from "./spreadsheet.js";
@@ -93,6 +94,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/runs") {
       await handleRunsPage(response);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/latest-run") {
+      await handleLatestRun(response);
       return;
     }
 
@@ -255,7 +261,7 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     checkDelayMs:
       Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
         ? Math.round(body.checkDelaySeconds * 1000)
-        : 3000,
+        : 1000,
     limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined
   }, requestBaseUrl(request));
 
@@ -263,6 +269,12 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
 }
 
 async function handleResumeRun(sourceRunId: string, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const activeSourceRun = runs.get(sourceRunId);
+  if (activeSourceRun?.status === "running") {
+    sendJson(response, 409, { error: "This run is still running. Stop it before starting a resumed run." });
+    return;
+  }
+
   const sourceRunDir = runDirectory(sourceRunId);
   if (!sourceRunDir) {
     sendJson(response, 400, { error: "Invalid run id." });
@@ -308,7 +320,7 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
   const run = startRun(upload, {
     worksheet: sourceState.runOptions?.worksheet,
     headed: sourceState.runOptions?.headed ?? false,
-    checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 3000,
+    checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 1000,
     limit: sourceState.runOptions?.limit,
     resumeAfterLicenseNumber,
     resumedFromRunId: sourceRunId
@@ -320,10 +332,12 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
 function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: string, onFinished?: (run: WebRun) => void): WebRun {
   const runId = upload.id;
   const outputDir = join(dirname(upload.path), "output");
+  const outputPaths = buildOutputPaths(outputDir);
   const run: WebRun = {
     id: runId,
     status: "running",
     outputDir,
+    outputPaths,
     events: [],
     clients: new Set(),
     cancelRequested: false
@@ -341,7 +355,7 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
     limit: options.limit,
     resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
     resumedFromRunId: options.resumedFromRunId,
-    onProgress: (update) => emit(run, update),
+    onProgress: (update) => emit(run, update.files ? { ...update, files: fileLinks(run.id, outputPaths) } : update),
     isCanceled: () => run.cancelRequested
   })
     .then(async (result) => {
@@ -497,7 +511,7 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
   }
 
   const extension = extname(path).toLowerCase();
-  const contentType = extension === ".txt"
+  const contentType = extension === ".txt" || extension === ".csv"
     ? "text/plain; charset=utf-8"
     : extension === ".json"
       ? "application/json; charset=utf-8"
@@ -587,6 +601,38 @@ async function handleRunsPage(response: ServerResponse): Promise<void> {
   sendHtml(response, runsHtml(runSummaries));
 }
 
+async function handleLatestRun(response: ServerResponse): Promise<void> {
+  const activeRun = [...runs.values()]
+    .filter((run) => run.status === "running")
+    .sort((a, b) => b.id.localeCompare(a.id))[0];
+
+  if (activeRun?.outputPaths) {
+    sendJson(response, 200, {
+      found: true,
+      id: activeRun.id,
+      status: activeRun.status,
+      message: `Run ${activeRun.id} is still running.`,
+      files: fileLinks(activeRun.id, activeRun.outputPaths)
+    });
+    return;
+  }
+
+  const [latestRun] = await listPreviousRuns();
+  if (!latestRun) {
+    sendJson(response, 200, { found: false });
+    return;
+  }
+
+  sendJson(response, 200, {
+    found: true,
+    id: latestRun.id,
+    status: latestRun.state?.phase ?? "unknown",
+    message: latestRun.state?.lastMessage ?? `Latest run ${latestRun.id}.`,
+    state: latestRun.state,
+    files: Object.fromEntries(Object.entries(latestRun.files).map(([key, link]) => [key, link.href]))
+  });
+}
+
 async function handleEnableEmailPoll(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const bodyText = (await readRequestBody(request)).toString("utf8").trim();
   const body = bodyText ? JSON.parse(bodyText) as { time?: string } : {};
@@ -664,6 +710,8 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
   const files: Record<string, string> = {
     send: outputPaths.sendPath,
     doNotSend: outputPaths.doNotSendPath,
+    sendCsv: outputPaths.sendCsvPath,
+    doNotSendCsv: outputPaths.doNotSendCsvPath,
     coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
     expired: outputPaths.expiredLogPath,
     greaterThan90: outputPaths.greaterThan90LogPath,
@@ -690,6 +738,8 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
   return {
     sendPath: join(outputDir, send),
     doNotSendPath: join(outputDir, doNotSend),
+    sendCsvPath: join(outputDir, "Send.csv"),
+    doNotSendCsvPath: join(outputDir, "DoNotSend.csv"),
     coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: join(outputDir, "expired.txt"),
     greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
@@ -714,7 +764,7 @@ async function listPreviousRuns(): Promise<PreviousRunSummary[]> {
 
     const folderStat = await stat(runDir);
     const state = await readRunStateSummary(outputPaths.runStatePath);
-    const files = previousRunFileLinks(entry.name, outputPaths);
+    const files = await existingRunFileLinks(outputPaths, previousRunFileLinks(entry.name, outputPaths));
     if (!state) delete files.runState;
 
     summaries.push({
@@ -752,6 +802,8 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
     Object.entries({
       send: outputPaths.sendPath,
       doNotSend: outputPaths.doNotSendPath,
+      sendCsv: outputPaths.sendCsvPath,
+      doNotSendCsv: outputPaths.doNotSendCsvPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -766,6 +818,8 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
     Object.entries({
       send: outputPaths.sendPath,
       doNotSend: outputPaths.doNotSendPath,
+      sendCsv: outputPaths.sendCsvPath,
+      doNotSendCsv: outputPaths.doNotSendCsvPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -773,6 +827,24 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
       runState: outputPaths.runStatePath
     }).map(([key, path]) => [key, { href: `/runs/${runId}/files/${key}`, label: basename(path) }])
   );
+}
+
+async function existingRunFileLinks(outputPaths: OutputPaths, files: Record<string, FileLink>): Promise<Record<string, FileLink>> {
+  const entries = await Promise.all(
+    Object.entries(files).map(async ([key, link]) => {
+      const path = pathForFileKey(outputPaths, key);
+      if (!path) return undefined;
+
+      try {
+        const fileStat = await stat(path);
+        return fileStat.isFile() ? [key, link] as const : undefined;
+      } catch {
+        return undefined;
+      }
+    })
+  );
+
+  return Object.fromEntries(entries.filter((entry): entry is readonly [string, FileLink] => entry !== undefined));
 }
 
 async function readRunStateSummary(path: string): Promise<PreviousRunStateSummary | undefined> {
@@ -1000,14 +1072,14 @@ function emailPollConfig(): EmailPollConfig {
     ? Boolean(time)
     : parseBoolean(process.env.EMAIL_POLL_ENABLED);
   const limit = Number(process.env.EMAIL_POLL_LIMIT);
-  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 3000);
+  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 1000);
 
   return {
     enabled,
     time,
     worksheet: process.env.EMAIL_POLL_WORKSHEET || undefined,
     headed: parseBoolean(process.env.EMAIL_POLL_HEADED),
-    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 3000,
+    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 1000,
     limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     baseUrl: process.env.EMAIL_BASE_URL ?? `http://localhost:${port}`
   };
@@ -1136,7 +1208,7 @@ function pageHtml(): string {
         </div>
         <div>
           <label for="checkDelay">Pause between website checks</label>
-          <input id="checkDelay" type="number" min="0" step="0.5" value="3">
+          <input id="checkDelay" type="number" min="0" step="0.5" value="1">
         </div>
         <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         <button id="run" disabled>Run Check</button>
@@ -1307,6 +1379,8 @@ function pageHtml(): string {
       setBusy(true);
       connect(monitorRunId);
       setStatus("Monitoring run " + monitorRunId + ".");
+    } else {
+      restoreLatestRun();
     }
 
     function connect(runId) {
@@ -1364,6 +1438,8 @@ function pageHtml(): string {
       const labels = {
         send: "Send workbook",
         doNotSend: "Do-not-send workbook",
+        sendCsv: "Live Send CSV",
+        doNotSendCsv: "Live Do-not-send CSV",
         coursesAlreadyTaken: "Course frequency workbook",
         expired: "Expired log",
         greaterThan90: "Greater-than-90 log",
@@ -1375,9 +1451,10 @@ function pageHtml(): string {
         const item = document.createElement("div");
         item.className = "file";
         const isWorkbook = ["send", "doNotSend", "coursesAlreadyTaken"].includes(key);
+        const isCsv = ["sendCsv", "doNotSendCsv"].includes(key);
         const iconClass = isWorkbook ? "excel" : "text";
-        const iconText = isWorkbook ? "X" : "N";
-        const iconLabel = isWorkbook ? "Excel workbook" : "Text log";
+        const iconText = isWorkbook ? "X" : isCsv ? "C" : "N";
+        const iconLabel = isWorkbook ? "Excel workbook" : isCsv ? "Pipe-delimited CSV" : "Text log";
         item.innerHTML =
           '<span class="file-name"><span class="file-icon ' + iconClass + '" title="' + iconLabel + '" aria-label="' + iconLabel + '">' + iconText + '</span><span>' + (labels[key] || key) + '</span></span>' +
           '<span class="file-actions"><a href="' + href + '" target="_blank">View</a><a href="' + href + '?download=1">Download</a></span>';
@@ -1398,6 +1475,59 @@ function pageHtml(): string {
       runButton.disabled = false;
       uploadMeta.textContent = payload.originalName + " loaded. " + payload.worksheets.length + " worksheet(s) found.";
       setStatus(message);
+    }
+
+    async function restoreLatestRun() {
+      try {
+        const response = await fetch("/latest-run");
+        const payload = await response.json();
+        if (!response.ok || !payload.found) return;
+
+        state.currentRunId = payload.id;
+        if (payload.status === "running") {
+          feed.innerHTML = "";
+          files.innerHTML = "";
+          bar.style.width = "0%";
+          state.isRunning = true;
+          state.stopRequested = false;
+          setBusy(true);
+          connect(payload.id);
+          setStatus("Monitoring run " + payload.id + ".");
+          return;
+        }
+
+        renderLatestRunSnapshot(payload);
+      } catch {
+        // The latest-run snapshot is best effort; the page should still load normally.
+      }
+    }
+
+    function renderLatestRunSnapshot(payload) {
+      const runState = payload.state || {};
+      const counts = {
+        eligible: Number(runState.eligible || 0),
+        checked: Number(runState.checked || 0),
+        send: Number(runState.send || 0),
+        doNotSend: Number(runState.doNotSend || 0),
+        errors: Number(runState.errors || 0)
+      };
+      const percent = counts.eligible > 0
+        ? Math.round((counts.checked / counts.eligible) * 100)
+        : payload.status === "complete" ? 100 : 0;
+
+      bar.style.width = Math.max(0, Math.min(100, percent)) + "%";
+      progressMeta.textContent = latestRunMeta(payload.status, counts, payload.message);
+      feed.innerHTML = "";
+      append("Latest run " + payload.id + " loaded from saved run state.");
+      append(progressMeta.textContent);
+      if (payload.message) append(payload.message);
+      if (payload.files) renderFiles(payload.files);
+      setStatus(payload.status === "complete" ? "Last run complete." : "Last run status: " + payload.status + ".");
+    }
+
+    function latestRunMeta(status, counts, message) {
+      const base = "Status: " + status + ". Checked " + counts.checked + " of " + counts.eligible + " eligible license(s). Send: " + counts.send + ". Do-not-send: " + counts.doNotSend + ". Errors: " + counts.errors + ".";
+      return message ? base + " Last message: " + message : base;
     }
 
     function append(message) {

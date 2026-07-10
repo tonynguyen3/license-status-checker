@@ -108,6 +108,16 @@ export class WashingtonLicenseChecker {
 
         checkedCount++;
 
+        let cancelInterrupt: ReturnType<typeof setInterval> | undefined;
+        if (browser) {
+          const activeBrowser = browser;
+          cancelInterrupt = setInterval(() => {
+            if (this.options.isCanceled?.()) {
+              void closeBrowser(activeBrowser);
+            }
+          }, 500);
+        }
+
         try {
           const result = await this.checkLicense(page, tradesman);
           if (shouldCollectResults) {
@@ -120,10 +130,22 @@ export class WashingtonLicenseChecker {
             doNotSendCount++;
           }
         } catch (error) {
+          if (this.options.isCanceled?.()) {
+            canceled = true;
+            this.options.onProgress?.({
+              type: "checks_canceled",
+              message: `Run stopped during an active website check after ${checkedCount}${total === undefined ? "" : ` of ${total}`} attempted website check(s). Partial output files will be written.`,
+              current: checkedCount,
+              total,
+              remaining: remainingChecks(total, checkedCount)
+            });
+            break;
+          }
+
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
-          console.log(`There was an error with ${tradesman.licenseNumber}.`);
+          console.log(`There was an error with ${describeTradesman(tradesman)}.`);
           await this.logger.writeErrorsToLog(
-            `License ${tradesman.licenseNumber}\n${message}\nThere was a Playwright error.`,
+            `License ${describeTradesman(tradesman)}\n${message}\nThere was a Playwright error.`,
             this.outputPaths.exceptionLogPath
           );
           errorCount++;
@@ -140,12 +162,16 @@ export class WashingtonLicenseChecker {
             });
             break;
           }
+        } finally {
+          if (cancelInterrupt) {
+            clearInterval(cancelInterrupt);
+          }
         }
 
         if (checkedCount % 50 === 0 || checkedCount === total) {
           this.options.onProgress?.({
             type: "checks_progress",
-            message: `Checked ${checkedCount}${total === undefined ? "" : ` of ${total}`} license(s). Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
+            message: `Checked ${checkedCount}${total === undefined ? "" : ` of ${total}`} license(s). Last checked: ${describeTradesman(tradesman)}. Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
             current: checkedCount,
             total,
             remaining: remainingChecks(total, checkedCount)
@@ -369,6 +395,14 @@ async function closeBrowser(browser: Browser): Promise<void> {
   } catch {
     // The run is already finished; browser cleanup failures should not hide output.
   }
+}
+
+function describeTradesman(tradesman: Tradesman): string {
+  const location = tradesman.sourceLocation
+    ?? (tradesman.sourceWorksheet && tradesman.sourceRowNumber !== undefined
+      ? `${tradesman.sourceWorksheet}!${tradesman.sourceRowNumber}`
+      : undefined);
+  return location ? `${location} (${tradesman.licenseNumber})` : tradesman.licenseNumber;
 }
 
 function knownTotal(tradesmen: TradesmanSource, limit?: number): number | undefined {

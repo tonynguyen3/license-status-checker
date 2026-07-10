@@ -6,6 +6,8 @@ This is a TypeScript + Playwright rewrite of the Washington path from the old C#
 
 The CLI reads an Excel workbook of Washington license holders, checks each license on Washington L&I, and writes:
 
+- `Send.csv`
+- `DoNotSend.csv`
 - `Send-{date}.xlsx`
 - `DoNotSend-{date}.xlsx`
 - `coursesAlreadyTaken.xlsx`
@@ -34,6 +36,8 @@ By default, all input and output files live in a `Files` folder under the projec
 license-status-checker/
   Files/
     ListToCheck.xlsx
+    Send.csv
+    DoNotSend.csv
     Send-{date}.xlsx
     DoNotSend-{date}.xlsx
     coursesAlreadyTaken.xlsx
@@ -77,6 +81,8 @@ Spreadsheet rows are filtered before the app opens the Washington website:
 
 Generated output files are written to the output directory. By default, that is also `Files/`. You can change it with `--out-dir`.
 
+- `Send.csv`: live pipe-delimited CSV output for send rows, appended during the website checks.
+- `DoNotSend.csv`: live pipe-delimited CSV output for do-not-send rows, appended during the website checks.
 - `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits.
 - `DoNotSend-{date}.xlsx`: license holders who should not be contacted, with a reason when available.
 - `coursesAlreadyTaken.xlsx`: course title/code frequency report from licenses that already show completed CE credits.
@@ -118,14 +124,14 @@ npm start -- --input /path/to/ListToCheck.xlsx --out-dir /path/to/Files
 npm start -- --worksheet Electricians
 npm start -- --worksheet "Plumber Trainees" --limit 5
 npm start -- --headed
-npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 3000
+npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 1000
 ```
 
 `--headed` opens the browser visibly, which is helpful while validating selectors against the state website.
 
 `--slow-mo` is a Playwright/browser debugging option. It slows down low-level browser actions such as navigation, locator operations, clicks, and typing. It is most useful with `--headed` when you want to watch what the browser is doing. It does not guarantee a clean pause between one license row and the next.
 
-`--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `3000`, which waits about 3 seconds between license rows.
+`--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `1000`, which waits about 1 second between license rows.
 
 ## Web Interface
 
@@ -154,7 +160,8 @@ If Washington returns an HTTP `429` response, or appears to show an F5/rate-limi
 The web run pipeline is designed to be friendlier to cloud or small-VM hosting:
 
 - spreadsheet rows are streamed from the input workbook instead of loading every row into memory at once
-- output workbooks are written incrementally as each license result is bucketed
+- `Send.csv` and `DoNotSend.csv` are written incrementally as each license result is bucketed
+- final Excel workbooks are generated from the CSV files after the website checks finish
 - run progress is persisted to `run-state.json` inside each run's output folder
 - the UI progress feed is summarized so it does not emit every row to the browser
 
@@ -164,6 +171,8 @@ Each web upload or email-loaded workbook is stored under a timestamped run folde
 Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
   ListToCheck.xlsx
   output/
+    Send.csv
+    DoNotSend.csv
     Send-{date}.xlsx
     DoNotSend-{date}.xlsx
     coursesAlreadyTaken.xlsx
@@ -241,7 +250,7 @@ Add these optional settings to `.env`:
 EMAIL_POLL_TIME=06:00
 EMAIL_POLL_WORKSHEET=Electricians
 EMAIL_POLL_LIMIT=50
-EMAIL_POLL_CHECK_DELAY_MS=3000
+EMAIL_POLL_CHECK_DELAY_MS=1000
 EMAIL_POLL_HEADED=false
 ```
 
@@ -268,7 +277,7 @@ npm test
 
 ## Notes
 
-The old C# app added records to an in-memory send list when the L&I page had no `Courses` section, but it did not write those rows to the Send spreadsheet. This rewrite writes all bucketed rows at the end, so those send rows are preserved.
+The old C# app added records to an in-memory send list when the L&I page had no `Courses` section, but it did not write those rows to the Send spreadsheet. This rewrite appends every bucketed row to the live CSV files and then builds the Excel workbooks from those CSV files, so those send rows are preserved.
 
 The Playwright selectors still depend on Washington L&I's page structure, especially:
 

@@ -7,9 +7,11 @@ import { buildOutputPaths } from "../src/paths.js";
 import {
   asText,
   readEligibleTradesmen,
+  readTradesmenCsv,
   readTradesmenWorkbook,
   readWashingtonSpreadsheet,
   parseDate,
+  StreamingTradesmenCsvWriter,
   StreamingTradesmenWorkbookWriter
 } from "../src/spreadsheet.js";
 
@@ -86,7 +88,10 @@ describe("readWashingtonSpreadsheet", () => {
       expect.objectContaining({
         licenseNumber: "LIC-1",
         name: "Ada",
-        expirationDate: dateDaysFromNow(30)
+        expirationDate: dateDaysFromNow(30),
+        sourceWorksheet: "Electricians",
+        sourceRowNumber: 2,
+        sourceLocation: "Electricians!2"
       })
     ]);
 
@@ -248,7 +253,10 @@ describe("StreamingTradesmenWorkbookWriter", () => {
       name: "Eli",
       expirationDate: dateDaysFromNow(30),
       trade: "Electrician",
-      hoursNeeded: 24
+      hoursNeeded: 24,
+      sourceWorksheet: "Electricians",
+      sourceRowNumber: 42,
+      sourceLocation: "Electricians!42"
     });
     await writer.commit();
 
@@ -273,7 +281,10 @@ describe("StreamingTradesmenWorkbookWriter", () => {
       name: "Eli",
       expirationDate: dateDaysFromNow(30),
       trade: "Electrician",
-      hoursNeeded: 24
+      hoursNeeded: 24,
+      sourceWorksheet: "Electricians",
+      sourceRowNumber: 42,
+      sourceLocation: "Electricians!42"
     });
     await writer.commit();
 
@@ -282,7 +293,10 @@ describe("StreamingTradesmenWorkbookWriter", () => {
         licenseNumber: "EL-1",
         name: "Eli",
         trade: "Electrician",
-        hoursNeeded: 24
+        hoursNeeded: 24,
+        sourceWorksheet: "Electricians",
+        sourceRowNumber: 42,
+        sourceLocation: "Electricians!42"
       })
     ]);
   });
@@ -301,5 +315,46 @@ describe("StreamingTradesmenWorkbookWriter", () => {
     expect(writer.count).toBe(0);
     expect(worksheet?.getRow(1).getCell(2).value).toBe("License Number");
     expect(worksheet?.rowCount).toBe(1);
+  });
+});
+
+describe("StreamingTradesmenCsvWriter", () => {
+  it("writes pipe-delimited CSV rows and reads them back", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPath = join(dir, "Send.csv");
+    const writer = await StreamingTradesmenCsvWriter.create(outputPath);
+
+    await writer.add({
+      licenseType: "EL",
+      licenseNumber: "EL-1",
+      name: "Eli | Electric",
+      expirationDate: dateDaysFromNow(30),
+      trade: "Electrician",
+      hoursNeeded: 24,
+      notSendReason: 'Already has "some" credits',
+      sourceWorksheet: "Electricians",
+      sourceRowNumber: 42,
+      sourceLocation: "Electricians!42"
+    });
+    writer.commit();
+
+    const content = await readFile(outputPath, "utf8");
+
+    expect(writer.count).toBe(1);
+    expect(content).toContain("License Type|License Number|Name");
+    expect(content).toContain('"Eli | Electric"');
+    expect(content).toContain('"Already has ""some"" credits"');
+    await expect(readTradesmenCsv(outputPath)).resolves.toEqual([
+      expect.objectContaining({
+        licenseNumber: "EL-1",
+        name: "Eli | Electric",
+        trade: "Electrician",
+        hoursNeeded: 24,
+        notSendReason: 'Already has "some" credits',
+        sourceWorksheet: "Electricians",
+        sourceRowNumber: 42,
+        sourceLocation: "Electricians!42"
+      })
+    ]);
   });
 });

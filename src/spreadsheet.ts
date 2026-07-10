@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import ExcelJS from "exceljs";
@@ -141,7 +141,7 @@ export async function* readEligibleTradesmen(
       if (rowsRead === 1 || rowsRead % 100 === 0) {
         options.onProgress?.({
           type: "spreadsheet_row",
-          message: `Read ${rowsRead} spreadsheet row(s). Eligible so far: ${eligibleCount}. Skipped/logged so far: ${errorCount}.`,
+          message: `Read ${rowsRead} spreadsheet row(s). Current location: ${worksheet.name}!${row.number}. Eligible so far: ${eligibleCount}. Skipped/logged so far: ${errorCount}.`,
           current: rowsRead
         });
       }
@@ -216,7 +216,10 @@ export async function* readEligibleTradesmen(
         city: asText(row.getCell(6).value),
         state: asText(row.getCell(7).value),
         zip: asText(row.getCell(8).value),
-        expirationDate: parsedExpiration.toLocaleDateString()
+        expirationDate: parsedExpiration.toLocaleDateString(),
+        sourceWorksheet: worksheet.name,
+        sourceRowNumber: row.number,
+        sourceLocation: rowLocation
       };
       eligibleCount++;
     }
@@ -383,7 +386,10 @@ function tradesmanRow(tradesman: Tradesman): Record<string, string | number | un
     NotSendReason: tradesman.notSendReason,
     Trade: tradesman.trade,
     HoursNeeded: tradesman.hoursNeeded,
-    HoursCompleted: tradesman.hoursCompleted
+    HoursCompleted: tradesman.hoursCompleted,
+    SourceWorksheet: tradesman.sourceWorksheet,
+    SourceRow: tradesman.sourceRowNumber,
+    SourceLocation: tradesman.sourceLocation
   };
 }
 
@@ -401,6 +407,11 @@ export async function writeTradesmenWorkbook(tradesmen: Tradesman[], path: strin
   worksheet.columns = TRADESMAN_COLUMNS;
   worksheet.addRows(rows);
   await workbook.xlsx.writeFile(path);
+}
+
+export async function writeTradesmenWorkbookFromCsv(csvPath: string, workbookPath: string): Promise<void> {
+  const tradesmen = await readTradesmenCsv(csvPath);
+  await writeTradesmenWorkbook(tradesmen, workbookPath);
 }
 
 export async function readTradesmenWorkbook(path: string): Promise<Tradesman[]> {
@@ -429,11 +440,54 @@ export async function readTradesmenWorkbook(path: string): Promise<Tradesman[]> 
       notSendReason: asText(row.getCell(10).value),
       trade: asText(row.getCell(11).value),
       hoursNeeded: asNumber(row.getCell(12).value),
-      hoursCompleted: asNumber(row.getCell(13).value)
+      hoursCompleted: asNumber(row.getCell(13).value),
+      sourceWorksheet: asText(row.getCell(14).value),
+      sourceRowNumber: asNumber(row.getCell(15).value),
+      sourceLocation: asText(row.getCell(16).value)
     });
   });
 
   return tradesmen;
+}
+
+export async function readTradesmenCsv(path: string): Promise<Tradesman[]> {
+  const content = await readFile(path, "utf8");
+  const rows = parsePipeDelimited(content);
+  if (rows.length === 0) return [];
+
+  const [headers, ...dataRows] = rows;
+  const columnIndex = new Map(headers.map((header, index) => [header, index]));
+  const value = (row: string[], header: string): string | undefined => {
+    const index = columnIndex.get(header);
+    if (index === undefined) return undefined;
+    return row[index] || undefined;
+  };
+
+  return dataRows
+    .map((row): Tradesman | undefined => {
+      const licenseNumber = value(row, "License Number");
+      if (!licenseNumber) return undefined;
+
+      return {
+        licenseType: value(row, "License Type"),
+        licenseNumber,
+        name: value(row, "Name"),
+        address1: value(row, "Address1"),
+        address2: value(row, "Address2"),
+        city: value(row, "City"),
+        state: value(row, "State"),
+        zip: value(row, "Zip"),
+        expirationDate: value(row, "ExpirationDate"),
+        notSendReason: value(row, "NotSendReason"),
+        trade: value(row, "Trade"),
+        hoursNeeded: asNumber(value(row, "HoursNeeded")),
+        hoursCompleted: asNumber(value(row, "HoursCompleted")),
+        sourceWorksheet: value(row, "SourceWorksheet"),
+        sourceRowNumber: asNumber(value(row, "SourceRow")),
+        sourceLocation: value(row, "SourceLocation")
+      } satisfies Tradesman;
+    })
+    .filter((tradesman): tradesman is Tradesman => tradesman !== undefined);
 }
 
 function asNumber(value: CellValue): number | undefined {
@@ -482,6 +536,86 @@ export class StreamingTradesmenWorkbookWriter {
     this.worksheet.commit();
     await this.workbook.commit();
   }
+}
+
+export class StreamingTradesmenCsvWriter {
+  private committed = false;
+  count = 0;
+
+  private constructor(private readonly path: string) {}
+
+  static async create(path: string): Promise<StreamingTradesmenCsvWriter> {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${TRADESMAN_COLUMNS.map((column) => pipeDelimitedCell(column.header)).join("|")}\n`, "utf8");
+    return new StreamingTradesmenCsvWriter(path);
+  }
+
+  async add(tradesman: Tradesman): Promise<void> {
+    if (this.committed) {
+      throw new Error("Cannot write to a committed CSV.");
+    }
+
+    const row = tradesmanRow(tradesman);
+    const line = TRADESMAN_COLUMNS.map((column) => pipeDelimitedCell(row[column.key])).join("|");
+    await appendFile(this.path, `${line}\n`, "utf8");
+    this.count++;
+  }
+
+  commit(): void {
+    this.committed = true;
+  }
+}
+
+function pipeDelimitedCell(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const text = String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!/[|\n"]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function parsePipeDelimited(content: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index];
+    const next = content[index + 1];
+
+    if (quoted) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index++;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = true;
+    } else if (char === "|") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+
+  if (cell || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+
+  return rows;
 }
 
 export async function writeCourseFrequencies(courses: CourseFrequency[], path: string): Promise<void> {

@@ -145,6 +145,8 @@ export class RunStateWriter {
     this.state.files = {
       send: result.outputPaths.sendPath,
       doNotSend: result.outputPaths.doNotSendPath,
+      sendCsv: result.outputPaths.sendCsvPath,
+      doNotSendCsv: result.outputPaths.doNotSendCsvPath,
       coursesAlreadyTaken: result.outputPaths.coursesAlreadyTakenPath,
       expired: result.outputPaths.expiredLogPath,
       greaterThan90: result.outputPaths.greaterThan90LogPath,

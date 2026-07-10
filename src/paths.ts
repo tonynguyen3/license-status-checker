@@ -9,6 +9,8 @@ export function buildOutputPaths(outDir: string, date = new Date()): OutputPaths
   return {
     sendPath: resolve(base, `Send-${stamp}.xlsx`),
     doNotSendPath: resolve(base, `DoNotSend-${stamp}.xlsx`),
+    sendCsvPath: resolve(base, "Send.csv"),
+    doNotSendCsvPath: resolve(base, "DoNotSend.csv"),
     coursesAlreadyTakenPath: resolve(base, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: resolve(base, "expired.txt"),
     greaterThan90LogPath: resolve(base, "greaterThan90.txt"),

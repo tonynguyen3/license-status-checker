@@ -10,6 +10,9 @@ export interface Tradesman {
   state?: string;
   zip?: string;
   expirationDate?: string;
+  sourceWorksheet?: string;
+  sourceRowNumber?: number;
+  sourceLocation?: string;
   trade?: string;
   hoursNeeded?: number;
   hoursCompleted?: number;
@@ -40,6 +43,8 @@ export interface CheckerOptions {
 export interface OutputPaths {
   sendPath: string;
   doNotSendPath: string;
+  sendCsvPath: string;
+  doNotSendCsvPath: string;
   coursesAlreadyTakenPath: string;
   expiredLogPath: string;
   greaterThan90LogPath: string;

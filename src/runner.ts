@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
 import { RunStateWriter } from "./run-state.js";
-import { readEligibleTradesmen, StreamingTradesmenWorkbookWriter, writeCourseFrequencies } from "./spreadsheet.js";
+import {
+  readEligibleTradesmen,
+  StreamingTradesmenCsvWriter,
+  writeCourseFrequencies,
+  writeTradesmenWorkbookFromCsv
+} from "./spreadsheet.js";
 import type { OutputPaths, ProgressReporter } from "./types.js";
 import { WashingtonLicenseChecker } from "./washington-checker.js";
 
@@ -38,7 +43,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
       worksheet: options.worksheet,
       headed: options.headed,
       slowMo: options.slowMo,
-      checkDelayMs: options.checkDelayMs ?? 3000,
+      checkDelayMs: options.checkDelayMs ?? 1000,
       limit: options.limit,
       resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
       resumedFromRunId: options.resumedFromRunId
@@ -57,22 +62,30 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
 
   logger.logStart();
 
-  const sendWriter = await StreamingTradesmenWorkbookWriter.create(outputPaths.sendPath);
-  const doNotSendWriter = await StreamingTradesmenWorkbookWriter.create(outputPaths.doNotSendPath);
+  const sendWriter = await StreamingTradesmenCsvWriter.create(outputPaths.sendCsvPath);
+  const doNotSendWriter = await StreamingTradesmenCsvWriter.create(outputPaths.doNotSendCsvPath);
+  reportProgress({
+    type: "output",
+    message: `Live pipe-delimited CSV outputs are ready: ${outputPaths.sendCsvPath} and ${outputPaths.doNotSendCsvPath}`,
+    files: {
+      sendCsv: outputPaths.sendCsvPath,
+      doNotSendCsv: outputPaths.doNotSendCsvPath
+    }
+  });
 
   let result: Awaited<ReturnType<WashingtonLicenseChecker["checkLicenses"]>> | undefined;
   try {
     const checker = new WashingtonLicenseChecker(logger, outputPaths, {
       headed: options.headed,
       slowMo: options.slowMo,
-      checkDelayMs: options.checkDelayMs ?? 3000,
+      checkDelayMs: options.checkDelayMs ?? 1000,
       limit: options.limit,
       onProgress: reportProgress,
       onResult: async (checkedResult) => {
         if (checkedResult.bucket === "send") {
-          sendWriter.add(checkedResult.tradesman);
+          await sendWriter.add(checkedResult.tradesman);
         } else {
-          doNotSendWriter.add(checkedResult.tradesman);
+          await doNotSendWriter.add(checkedResult.tradesman);
         }
         await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
       },
@@ -86,18 +99,20 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
     });
     result = await checker.checkLicenses(tradesmen);
   } finally {
-    await Promise.all([
-      sendWriter.commit(),
-      doNotSendWriter.commit(),
-      ensureLogFiles(outputPaths)
-    ]);
+    sendWriter.commit();
+    doNotSendWriter.commit();
+    await ensureLogFiles(outputPaths);
   }
 
   if (!result) {
     throw new Error("Washington check did not return a result.");
   }
 
-  await writeCourseFrequencies(result.courseFrequencies, outputPaths.coursesAlreadyTakenPath);
+  await Promise.all([
+    writeTradesmenWorkbookFromCsv(outputPaths.sendCsvPath, outputPaths.sendPath),
+    writeTradesmenWorkbookFromCsv(outputPaths.doNotSendCsvPath, outputPaths.doNotSendPath),
+    writeCourseFrequencies(result.courseFrequencies, outputPaths.coursesAlreadyTakenPath)
+  ]);
   await runState.recordFinal({
     canceled: result.canceled,
     outputPaths
