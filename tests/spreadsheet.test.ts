@@ -9,6 +9,7 @@ import {
   readEligibleTradesmen,
   readTradesmenWorkbook,
   readWashingtonSpreadsheet,
+  parseDate,
   StreamingTradesmenWorkbookWriter
 } from "../src/spreadsheet.js";
 
@@ -55,6 +56,12 @@ describe("asText", () => {
   it("normalizes blank and date cell values", () => {
     expect(asText("  ")).toBeUndefined();
     expect(asText(new Date(2026, 6, 6))).toBe("7/6/2026");
+  });
+});
+
+describe("parseDate", () => {
+  it("handles Excel serial date values from streamed worksheet cells", () => {
+    expect(parseDate("46225.5")?.toISOString().slice(0, 10)).toBe("2026-07-22");
   });
 });
 

@@ -48,8 +48,22 @@ export function asText(value: CellValue): string | undefined {
 
 export function parseDate(value: string | undefined): Date | undefined {
   if (!value) return undefined;
+  const serialDate = parseExcelSerialDate(value);
+  if (serialDate) return serialDate;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function parseExcelSerialDate(value: string): Date | undefined {
+  const text = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(text)) return undefined;
+
+  const serial = Number(text);
+  if (!Number.isFinite(serial) || serial < 1 || serial > 100000) return undefined;
+
+  const excelEpoch = Date.UTC(1899, 11, 30);
+  const utcDate = new Date(excelEpoch + Math.floor(serial) * 24 * 60 * 60 * 1000);
+  return new Date(utcDate.getUTCFullYear(), utcDate.getUTCMonth(), utcDate.getUTCDate());
 }
 
 export async function readWashingtonSpreadsheet(
@@ -202,7 +216,7 @@ export async function* readEligibleTradesmen(
         city: asText(row.getCell(6).value),
         state: asText(row.getCell(7).value),
         zip: asText(row.getCell(8).value),
-        expirationDate
+        expirationDate: parsedExpiration.toLocaleDateString()
       };
       eligibleCount++;
     }
