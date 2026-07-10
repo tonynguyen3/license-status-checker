@@ -1,11 +1,12 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
+import type { DurableRunState } from "./run-state.js";
 import { runWashingtonCheck } from "./runner.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
 
@@ -400,9 +401,14 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
     return;
   }
 
-  const isText = extname(path).toLowerCase() === ".txt";
+  const extension = extname(path).toLowerCase();
+  const contentType = extension === ".txt"
+    ? "text/plain; charset=utf-8"
+    : extension === ".json"
+      ? "application/json; charset=utf-8"
+      : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   response.writeHead(200, {
-    "Content-Type": isText ? "text/plain; charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "Content-Type": contentType,
     "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${basename(path)}"`
   });
   createReadStream(path).pipe(response);
@@ -523,7 +529,8 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
     coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
     expired: outputPaths.expiredLogPath,
     greaterThan90: outputPaths.greaterThan90LogPath,
-    exception: outputPaths.exceptionLogPath
+    exception: outputPaths.exceptionLogPath,
+    runState: outputPaths.runStatePath
   };
   return files[fileKey];
 }
@@ -553,10 +560,10 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
   };
 }
 
-async function listPreviousRuns(): Promise<Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>> {
+async function listPreviousRuns(): Promise<PreviousRunSummary[]> {
   await mkdir(rootDir, { recursive: true });
   const entries = await readdir(rootDir, { withFileTypes: true });
-  const summaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }> = [];
+  const summaries: PreviousRunSummary[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -568,10 +575,15 @@ async function listPreviousRuns(): Promise<Array<{ id: string; createdAt: string
     if (!runDir) continue;
 
     const folderStat = await stat(runDir);
+    const state = await readRunStateSummary(outputPaths.runStatePath);
+    const files = previousRunFileLinks(entry.name, outputPaths);
+    if (!state) delete files.runState;
+
     summaries.push({
       id: entry.name,
       createdAt: folderStat.birthtime.toLocaleString(),
-      files: previousRunFileLinks(entry.name, outputPaths)
+      files,
+      state
     });
   }
 
@@ -605,7 +617,8 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
-      exception: outputPaths.exceptionLogPath
+      exception: outputPaths.exceptionLogPath,
+      runState: outputPaths.runStatePath
     }).map(([key]) => [key, `/runs/${runId}/files/${key}`])
   );
 }
@@ -618,9 +631,36 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
-      exception: outputPaths.exceptionLogPath
+      exception: outputPaths.exceptionLogPath,
+      runState: outputPaths.runStatePath
     }).map(([key, path]) => [key, { href: `/runs/${runId}/files/${key}`, label: basename(path) }])
   );
+}
+
+async function readRunStateSummary(path: string): Promise<PreviousRunStateSummary | undefined> {
+  try {
+    const state = JSON.parse(await readFile(path, "utf8")) as DurableRunState;
+    return {
+      phase: state.phase,
+      startedAt: formatDateTime(state.startedAt),
+      updatedAt: formatDateTime(state.updatedAt),
+      completedAt: state.completedAt ? formatDateTime(state.completedAt) : undefined,
+      eligible: state.counts.eligible,
+      checked: state.counts.checked,
+      send: state.counts.send,
+      doNotSend: state.counts.doNotSend,
+      errors: state.counts.errors,
+      lastLicenseNumber: state.checkpoint?.licenseNumber,
+      lastMessage: state.lastMessage,
+      error: state.error
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString();
 }
 
 function createRunFolderName(date = new Date()): string {
@@ -1168,7 +1208,8 @@ function pageHtml(): string {
         coursesAlreadyTaken: "Course frequency workbook",
         expired: "Expired log",
         greaterThan90: "Greater-than-90 log",
-        exception: "Exception log"
+        exception: "Exception log",
+        runState: "Run state"
       };
       files.innerHTML = "";
       for (const [key, href] of Object.entries(fileLinks)) {
@@ -1275,12 +1316,35 @@ interface FileLink {
   label: string;
 }
 
-function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>): string {
+interface PreviousRunSummary {
+  id: string;
+  createdAt: string;
+  files: Record<string, FileLink>;
+  state?: PreviousRunStateSummary;
+}
+
+interface PreviousRunStateSummary {
+  phase: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  eligible: number;
+  checked: number;
+  send: number;
+  doNotSend: number;
+  errors: number;
+  lastLicenseNumber?: string;
+  lastMessage?: string;
+  error?: string;
+}
+
+function runsHtml(runSummaries: PreviousRunSummary[]): string {
   const rows = runSummaries.map((run) => `
     <section class="run" data-run="${escapeHtml(run.id)}">
-      <div>
+      <div class="run-details">
         <h2>${escapeHtml(run.id)}</h2>
-        <p>${escapeHtml(run.createdAt)}</p>
+        <p>Created ${escapeHtml(run.createdAt)}</p>
+        ${runStateSummary(run.state)}
       </div>
       <div class="run-actions">
         <div class="links">
@@ -1290,6 +1354,7 @@ function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Re
           ${runFileLink(run.files.expired)}
           ${runFileLink(run.files.greaterThan90)}
           ${runFileLink(run.files.exception)}
+          ${runFileLink(run.files.runState)}
         </div>
         <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>
@@ -1314,8 +1379,13 @@ function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Re
     .brand { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
     .run { border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
+    .run-details { min-width:260px; }
     h2 { font-size:16px; margin:0 0 4px; }
     p { margin:0; color:var(--muted); font-size:13px; }
+    .run-state { margin-top:10px; display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; }
+    .run-state span { border:1px solid var(--line); border-radius:999px; padding:4px 8px; background:var(--panel); }
+    .run-message { margin-top:8px; max-width:620px; }
+    .run-error { color:var(--danger); }
     button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
     button:hover { background:var(--panel); border-color:var(--gold); }
     .delete-run { color:var(--danger); }
@@ -1368,6 +1438,28 @@ function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Re
   </script>
 </body>
 </html>`;
+}
+
+function runStateSummary(state: PreviousRunStateSummary | undefined): string {
+  if (!state) return "";
+
+  const finishedAt = state.completedAt ? `<span>Finished: ${escapeHtml(state.completedAt)}</span>` : "";
+  const lastLicense = state.lastLicenseNumber ? `<span>Last license: ${escapeHtml(state.lastLicenseNumber)}</span>` : "";
+  const message = state.error || state.lastMessage;
+
+  return `
+    <div class="run-state">
+      <span>Phase: ${escapeHtml(state.phase)}</span>
+      <span>Eligible: ${state.eligible}</span>
+      <span>Checked: ${state.checked}</span>
+      <span>Send: ${state.send}</span>
+      <span>Do not send: ${state.doNotSend}</span>
+      <span>Errors: ${state.errors}</span>
+      ${lastLicense}
+      ${finishedAt}
+    </div>
+    ${message ? `<p class="run-message${state.error ? " run-error" : ""}">${escapeHtml(message)}</p>` : ""}
+  `;
 }
 
 function runFileLink(file: FileLink | undefined): string {
