@@ -180,7 +180,14 @@ The web run pipeline is designed to be friendlier to cloud or small-VM hosting. 
 
 The durable JSONL files make the workflow less tightly coupled to the browser worker. They also make future cloud deployments easier because the web UI, queue worker, and report generator can become separate processes later without changing the run folder contract.
 
-The app now uses a pipeline storage boundary internally. The current implementation is a filesystem/JSONL adapter, but the runner depends on storage interfaces for the work queue, lookup results, course frequencies, and worker control/status. That keeps local runs simple while leaving a clear place to add Azure Queue/Blob/SQL, Cosmos DB, Google Cloud Storage/Pub/Sub/Firestore, or another cloud adapter later.
+The app now uses two cloud-readiness boundaries internally:
+
+- `PipelineStorage`: queue/result/status data for work items, lookup results, course frequencies, and worker control/status. The current implementation is a filesystem/JSONL adapter.
+- `ArtifactStore`: run artifacts such as uploaded input workbooks, generated report files, logs, previous-run browsing, and run deletion. The current implementation is a local filesystem adapter rooted at `Files/web-runs`.
+
+That keeps local runs simple while leaving clear places to add Azure Queue/Blob/SQL, Cosmos DB, Google Cloud Storage/Pub/Sub/Firestore, or another cloud adapter later.
+
+The work queue also uses resumable item leasing. Work items move through `queued`, `in_progress`, `completed`, and `failed` states. A worker claims one queued item at a time, marks it complete after writing a lookup result, marks it failed when a website check fails, releases stale `in_progress` claims on the next worker start, and requeues failed items for later retry until the attempt cap is reached. This mirrors how a cloud queue worker would claim, heartbeat, retry, and complete messages.
 
 Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
 

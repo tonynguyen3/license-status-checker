@@ -317,11 +317,40 @@ function findCheckpointWorkItemId(workItems: { id: number; tradesman: Tradesman 
   return checkpoint?.id ?? 0;
 }
 
+async function* claimedTradesmen(
+  store: PipelineStorage,
+  workerId: string,
+  claimedByLicense: Map<string, WorkItem>,
+  limit?: number
+): AsyncGenerator<Tradesman> {
+  let claimedCount = 0;
+  while (limit === undefined || claimedCount < limit) {
+    if (store.isPauseRequested()) return;
+
+    const item = await store.claimNextWorkItem(workerId);
+    if (!item) return;
+
+    claimedCount++;
+    const tradesman = {
+      ...item.tradesman,
+      workItemId: item.id
+    };
+    claimedByLicense.set(normalizeLicenseNumber(tradesman.licenseNumber), item);
+    yield tradesman;
+  }
+}
+
+function normalizeLicenseNumber(licenseNumber: string | undefined): string {
+  return licenseNumber?.trim().toUpperCase() ?? "";
+}
+
 async function processLookupQueue(context: RunContext): Promise<LookupStageResult> {
   const { options, outputPaths, store, logger, runState, reportProgress } = context;
   await store.acquireWorkerLock();
   const startedAt = new Date().toISOString();
+  const workerId = `${process.pid}-${startedAt}`;
   let remainingWorkItems: WorkItem[] = [];
+  const claimedByLicense = new Map<string, WorkItem>();
   let workerStatus: "running" | "paused" | "rate_limited" | "completed" | "failed" = "running";
   let sendCount = 0;
   let doNotSendCount = 0;
@@ -329,10 +358,13 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
   let rateLimited = false;
 
   try {
+    await store.releaseStaleClaims(30 * 60 * 1000);
+    await store.requeueFailedWorkItems(3);
     const workItems = await store.readWorkItems();
     const existingResults = await store.readLookupResults();
     const completedIds = new Set(existingResults.map((result) => result.workItemId).filter((id): id is number => id !== undefined));
-    remainingWorkItems = workItems.filter((item) => !completedIds.has(item.id));
+    await Promise.all(workItems.filter((item) => completedIds.has(item.id) && item.status !== "completed").map((item) => store.completeWorkItem(item.id)));
+    remainingWorkItems = workItems.filter((item) => item.status !== "completed" && !completedIds.has(item.id));
     workerStatus = store.isPauseRequested() ? "paused" : "running";
     await store.writeWorkerStatus({
       status: workerStatus,
@@ -378,6 +410,12 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
           rateLimited = true;
           workerStatus = "rate_limited";
         }
+        if ((update.type === "website_check_error" || update.type === "rate_limited") && update.licenseNumber) {
+          const claimed = claimedByLicense.get(normalizeLicenseNumber(update.licenseNumber));
+          if (claimed) {
+            void store.failWorkItem(claimed.id, update.message);
+          }
+        }
         void store.writeWorkerStatus({
           status: workerStatus,
           pid: process.pid,
@@ -391,6 +429,9 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
       },
       onResult: async (checkedResult: BucketedResult) => {
         await store.appendLookupResult(checkedResult);
+        if (checkedResult.tradesman.workItemId !== undefined) {
+          await store.completeWorkItem(checkedResult.tradesman.workItemId);
+        }
         if (checkedResult.bucket === "send") {
           sendCount++;
         } else {
@@ -401,7 +442,7 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
       isCanceled: () => options.isCanceled?.() === true || store.isPauseRequested()
     });
 
-    const result = await checker.checkLicenses(remainingWorkItems.map((item) => item.tradesman));
+    const result = await checker.checkLicenses(claimedTradesmen(store, workerId, claimedByLicense, options.limit));
     if (store.isPauseRequested() && result.canceled) {
       workerStatus = "paused";
     } else if (rateLimited) {

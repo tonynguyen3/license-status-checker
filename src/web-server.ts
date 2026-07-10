@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
-import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
+import { FilesystemArtifactStore } from "./artifact-store.js";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
@@ -19,6 +20,7 @@ loadEnvFile();
 
 const port = Number(process.env.PORT ?? 3000);
 const rootDir = resolve("Files", "web-runs");
+const artifactStore = new FilesystemArtifactStore(rootDir);
 const emailPollLogPath = resolve("Files", "email-poll.log");
 const appIconPath = resolve("docs", "license-status-checker-icon.png");
 const uploads = new Map<string, UploadedWorkbook>();
@@ -250,17 +252,14 @@ async function handleCheckEmail(response: ServerResponse): Promise<void> {
 
 async function saveUploadedWorkbook(originalName: string, content: Buffer): Promise<UploadedWorkbook> {
   const uploadId = createRunFolderName();
-  const uploadDir = join(rootDir, uploadId);
-  const inputPath = join(uploadDir, "ListToCheck.xlsx");
-  await mkdir(uploadDir, { recursive: true });
-  await writeFile(inputPath, content);
+  const saved = await artifactStore.saveInputWorkbook(uploadId, originalName, content);
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(inputPath);
+  await workbook.xlsx.readFile(saved.path);
   const uploaded: UploadedWorkbook = {
-    id: uploadId,
-    path: inputPath,
-    originalName,
+    id: saved.id,
+    path: saved.path,
+    originalName: saved.originalName,
     worksheets: workbook.worksheets.map((worksheet) => worksheet.name)
   };
   uploads.set(uploadId, uploaded);
@@ -305,20 +304,13 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
     return;
   }
 
-  const sourceRunDir = runDirectory(sourceRunId);
-  if (!sourceRunDir) {
+  const sourceInputPath = artifactStore.inputPathForRun(sourceRunId);
+  if (!sourceInputPath) {
     sendJson(response, 400, { error: "Invalid run id." });
     return;
   }
 
-  const sourceInputPath = join(sourceRunDir, "ListToCheck.xlsx");
-  try {
-    const inputStat = await stat(sourceInputPath);
-    if (!inputStat.isFile()) {
-      sendJson(response, 404, { error: "Original input workbook is not available for this run." });
-      return;
-    }
-  } catch {
+  if (!(await artifactStore.fileExists(sourceInputPath))) {
     sendJson(response, 404, { error: "Original input workbook is not available for this run." });
     return;
   }
@@ -346,7 +338,7 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
     return;
   }
 
-  const upload = await copyWorkbookForResume(sourceInputPath, sourceRunId);
+  const upload = await copyWorkbookForResume(sourceRunId);
   const run = startRun(upload, {
     worksheet: sourceState.runOptions?.worksheet,
     headed: sourceState.runOptions?.headed ?? false,
@@ -365,7 +357,7 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
 
 function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: string, onFinished?: (run: WebRun) => void): WebRun {
   const runId = upload.id;
-  const outputDir = join(dirname(upload.path), "output");
+  const outputDir = artifactStore.outputDirForRun(runId) ?? join(dirname(upload.path), "output");
   const outputPaths = buildOutputPaths(outputDir);
   const run: WebRun = {
     id: runId,
@@ -420,19 +412,19 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
   return run;
 }
 
-async function copyWorkbookForResume(sourceInputPath: string, sourceRunId: string): Promise<UploadedWorkbook> {
+async function copyWorkbookForResume(sourceRunId: string): Promise<UploadedWorkbook> {
   const uploadId = createRunFolderName();
-  const uploadDir = join(rootDir, uploadId);
-  const inputPath = join(uploadDir, "ListToCheck.xlsx");
-  await mkdir(uploadDir, { recursive: true });
-  await copyFile(sourceInputPath, inputPath);
+  const saved = await artifactStore.copyInputWorkbook(sourceRunId, uploadId, `Resume of ${sourceRunId}`);
+  if (!saved) {
+    throw new Error(`Original input workbook is not available for run ${sourceRunId}.`);
+  }
 
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(inputPath);
+  await workbook.xlsx.readFile(saved.path);
   const uploaded: UploadedWorkbook = {
-    id: uploadId,
-    path: inputPath,
-    originalName: `Resume of ${sourceRunId}`,
+    id: saved.id,
+    path: saved.path,
+    originalName: saved.originalName,
     worksheets: workbook.worksheets.map((worksheet) => worksheet.name)
   };
   uploads.set(uploadId, uploaded);
@@ -537,13 +529,7 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
     return;
   }
 
-  try {
-    const fileStat = await stat(path);
-    if (!fileStat.isFile()) {
-      sendJson(response, 404, { error: "File not found." });
-      return;
-    }
-  } catch {
+  if (!(await artifactStore.fileExists(path))) {
     sendJson(response, 404, { error: "File not found." });
     return;
   }
@@ -617,13 +603,7 @@ async function handleRegenerateReports(runId: string, response: ServerResponse):
     return;
   }
 
-  try {
-    const lookupStat = await stat(outputPaths.lookupResultsPath);
-    if (!lookupStat.isFile()) {
-      sendJson(response, 404, { error: "This run does not have durable lookup results to regenerate reports from." });
-      return;
-    }
-  } catch {
+  if (!(await artifactStore.fileExists(outputPaths.lookupResultsPath))) {
     sendJson(response, 404, { error: "This run does not have durable lookup results to regenerate reports from." });
     return;
   }
@@ -670,24 +650,18 @@ async function handleDeleteRun(runId: string, response: ServerResponse): Promise
     return;
   }
 
-  const runDir = runDirectory(runId);
+  const runDir = artifactStore.runDirectory(runId);
   if (!runDir) {
     sendJson(response, 400, { error: "Invalid run id." });
     return;
   }
 
-  try {
-    const folderStat = await stat(runDir);
-    if (!folderStat.isDirectory()) {
-      sendJson(response, 404, { error: "Run folder not found." });
-      return;
-    }
-  } catch {
+  if (!(await artifactStore.directoryExists(runDir))) {
     sendJson(response, 404, { error: "Run folder not found." });
     return;
   }
 
-  await rm(runDir, { recursive: true, force: true });
+  await artifactStore.deleteRun(runId);
   runs.delete(runId);
   uploads.delete(runId);
   sendJson(response, 200, { deleted: true, runId });
@@ -827,82 +801,30 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
   const run = runs.get(runId);
   if (run?.outputPaths) return run.outputPaths;
 
-  const runDir = runDirectory(runId);
-  if (!runDir) return undefined;
-
-  const outputDir = join(runDir, "output");
-  const files = await filesInDirectory(outputDir);
-  const send = files.find((file) => /^Send-.+\.xlsx$/i.test(file));
-  const doNotSend = files.find((file) => /^DoNotSend-.+\.xlsx$/i.test(file));
-
-  if (!send || !doNotSend) return undefined;
-
-  return {
-    sendPath: join(outputDir, send),
-    doNotSendPath: join(outputDir, doNotSend),
-    sendCsvPath: join(outputDir, "Send.csv"),
-    doNotSendCsvPath: join(outputDir, "DoNotSend.csv"),
-    workItemsPath: join(outputDir, "work-items.jsonl"),
-    lookupResultsPath: join(outputDir, "lookup-results.jsonl"),
-    courseFrequenciesJsonPath: join(outputDir, "course-frequencies.json"),
-    workerStatusPath: join(outputDir, "worker-status.json"),
-    workerControlPath: join(outputDir, "worker-control.json"),
-    workerLockPath: join(outputDir, "worker.lock"),
-    coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
-    expiredLogPath: join(outputDir, "expired.txt"),
-    greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
-    exceptionLogPath: join(outputDir, "exception.txt"),
-    runStatePath: join(outputDir, "run-state.json")
-  };
+  return artifactStore.outputPathsForRun(runId);
 }
 
 async function listPreviousRuns(): Promise<PreviousRunSummary[]> {
-  await mkdir(rootDir, { recursive: true });
-  const entries = await readdir(rootDir, { withFileTypes: true });
   const summaries: PreviousRunSummary[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-
-    const outputPaths = await outputPathsForRun(entry.name);
+  for (const runId of await artifactStore.listRunIds()) {
+    const outputPaths = await outputPathsForRun(runId);
     if (!outputPaths) continue;
 
-    const runDir = runDirectory(entry.name);
-    if (!runDir) continue;
-
-    const folderStat = await stat(runDir);
+    const createdAt = await artifactStore.runCreatedAt(runId);
     const state = await readRunStateSummary(outputPaths.runStatePath);
-    const files = await existingRunFileLinks(outputPaths, previousRunFileLinks(entry.name, outputPaths));
+    const files = await existingRunFileLinks(outputPaths, previousRunFileLinks(runId, outputPaths));
     if (!state) delete files.runState;
 
     summaries.push({
-      id: entry.name,
-      createdAt: folderStat.birthtime.toLocaleString(),
+      id: runId,
+      createdAt: (createdAt ?? new Date(0)).toLocaleString(),
       files,
       state
     });
   }
 
   return summaries.sort((a, b) => b.id.localeCompare(a.id));
-}
-
-function runDirectory(runId: string): string | undefined {
-  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === "." || runId === "..") return undefined;
-
-  const directory = resolve(rootDir, runId);
-  const rootWithSeparator = `${rootDir}${rootDir.endsWith("/") ? "" : "/"}`;
-  if (directory !== rootDir && !directory.startsWith(rootWithSeparator)) return undefined;
-
-  return directory;
-}
-
-async function filesInDirectory(path: string): Promise<string[]> {
-  try {
-    const entries = await readdir(path, { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
-  } catch {
-    return [];
-  }
 }
 
 function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, string> {
@@ -953,12 +875,7 @@ async function existingRunFileLinks(outputPaths: OutputPaths, files: Record<stri
       const path = pathForFileKey(outputPaths, key);
       if (!path) return undefined;
 
-      try {
-        const fileStat = await stat(path);
-        return fileStat.isFile() ? [key, link] as const : undefined;
-      } catch {
-        return undefined;
-      }
+      return await artifactStore.fileExists(path) ? [key, link] as const : undefined;
     })
   );
 

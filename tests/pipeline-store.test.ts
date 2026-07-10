@@ -133,4 +133,69 @@ describe("PipelineStore", () => {
     await expect(store.acquireWorkerLock()).resolves.toBeUndefined();
     await store.releaseWorkerLock();
   });
+
+  it("claims, completes, fails, and releases queued work items", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const store = new PipelineStore(outputPaths);
+
+    await store.initialize();
+    await store.appendWorkItem({
+      id: 1,
+      status: "queued",
+      createdAt: "2026-07-06T00:00:00.000Z",
+      tradesman: { workItemId: 1, licenseNumber: "EL-1" }
+    });
+    await store.appendWorkItem({
+      id: 2,
+      status: "queued",
+      createdAt: "2026-07-06T00:00:00.000Z",
+      tradesman: { workItemId: 2, licenseNumber: "EL-2" }
+    });
+
+    const first = await store.claimNextWorkItem("worker-a");
+    expect(first).toEqual(expect.objectContaining({
+      id: 1,
+      status: "in_progress",
+      claimedBy: "worker-a",
+      attempts: 1
+    }));
+
+    await store.completeWorkItem(1);
+    await expect(store.readWorkItems()).resolves.toEqual([
+      expect.objectContaining({ id: 1, status: "completed" }),
+      expect.objectContaining({ id: 2, status: "queued" })
+    ]);
+
+    const second = await store.claimNextWorkItem("worker-a");
+    expect(second?.id).toBe(2);
+    await store.failWorkItem(2, "Website error");
+    await expect(store.readWorkItems()).resolves.toEqual([
+      expect.objectContaining({ id: 1, status: "completed" }),
+      expect.objectContaining({ id: 2, status: "failed", lastError: "Website error" })
+    ]);
+
+    await expect(store.requeueFailedWorkItems(3)).resolves.toBe(1);
+    await expect(store.readWorkItems()).resolves.toEqual([
+      expect.objectContaining({ id: 1, status: "completed" }),
+      expect.objectContaining({ id: 2, status: "queued", lastError: "Requeued failed work item for retry." })
+    ]);
+    await store.claimNextWorkItem("worker-a");
+    await store.failWorkItem(2, "Website error again");
+    await expect(store.requeueFailedWorkItems(2)).resolves.toBe(0);
+
+    await store.appendWorkItem({
+      id: 3,
+      status: "queued",
+      createdAt: "2026-07-06T00:00:00.000Z",
+      tradesman: { workItemId: 3, licenseNumber: "EL-3" }
+    });
+    await store.claimNextWorkItem("worker-b");
+    await expect(store.releaseStaleClaims(0)).resolves.toBe(1);
+    await expect(store.readWorkItems()).resolves.toEqual([
+      expect.objectContaining({ id: 1, status: "completed" }),
+      expect.objectContaining({ id: 2, status: "failed" }),
+      expect.objectContaining({ id: 3, status: "queued" })
+    ]);
+  });
 });

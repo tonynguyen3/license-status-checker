@@ -3,8 +3,13 @@ import type { BucketedResult, CourseFrequency, Tradesman } from "./types.js";
 export interface WorkItem {
   id: number;
   tradesman: Tradesman;
-  status: "queued";
+  status: "queued" | "in_progress" | "completed" | "failed";
   createdAt: string;
+  claimedAt?: string;
+  claimedBy?: string;
+  completedAt?: string;
+  attempts?: number;
+  lastError?: string;
 }
 
 export interface LookupResultRecord {
@@ -31,6 +36,11 @@ export interface WorkerStatus {
 export interface WorkQueueStore {
   appendWorkItem(item: WorkItem): Promise<void>;
   readWorkItems(): Promise<WorkItem[]>;
+  claimNextWorkItem(workerId: string): Promise<WorkItem | undefined>;
+  completeWorkItem(id: number): Promise<void>;
+  failWorkItem(id: number, error: string): Promise<void>;
+  requeueFailedWorkItems(maxAttempts: number): Promise<number>;
+  releaseStaleClaims(maxAgeMs: number): Promise<number>;
 }
 
 export interface LookupResultStore {
