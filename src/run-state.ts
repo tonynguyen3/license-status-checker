@@ -2,7 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { LicenseBucket, OutputPaths, ProgressUpdate, Tradesman } from "./types.js";
 
-export type RunPhase = "created" | "reading" | "checking" | "writing_outputs" | "complete" | "canceled" | "error";
+export type RunPhase = "created" | "importing" | "reading" | "queued" | "checking" | "writing_outputs" | "complete" | "canceled" | "error";
 
 export interface DurableRunState {
   id?: string;
@@ -79,6 +79,10 @@ export class RunStateWriter {
   async recordProgress(update: ProgressUpdate): Promise<void> {
     this.state.lastMessage = update.message;
 
+    if (update.type === "import_started") {
+      this.state.phase = "importing";
+    }
+
     if (update.type === "spreadsheet_loading" || update.type === "worksheet_started" || update.type === "spreadsheet_row") {
       this.state.phase = "reading";
     }
@@ -88,12 +92,17 @@ export class RunStateWriter {
     }
 
     if (update.type === "spreadsheet_complete") {
-      this.state.phase = "checking";
+      this.state.phase = "queued";
       this.state.counts.spreadsheetRowsRead = update.current ?? this.state.counts.spreadsheetRowsRead;
       this.state.counts.eligible = update.total ?? this.state.counts.eligible;
     }
 
-    if (update.type === "checks_started" || update.type === "checks_progress") {
+    if (update.type === "import_complete") {
+      this.state.phase = "queued";
+      this.state.counts.eligible = update.total ?? update.current ?? this.state.counts.eligible;
+    }
+
+    if (update.type === "lookup_started" || update.type === "checks_started" || update.type === "checks_progress") {
       this.state.phase = "checking";
       this.state.counts.checked = update.current ?? this.state.counts.checked;
       this.state.counts.errors = update.errorCount ?? this.state.counts.errors;
@@ -124,7 +133,7 @@ export class RunStateWriter {
       this.state.canResume = update.canResume ?? this.state.counts.checked > 0;
     }
 
-    if (update.type === "checks_complete") {
+    if (update.type === "checks_complete" || update.type === "reports_started" || update.type === "reports_complete") {
       this.state.phase = "writing_outputs";
       this.state.counts.checked = update.current ?? this.state.counts.checked;
     }
@@ -165,6 +174,9 @@ export class RunStateWriter {
       doNotSend: result.outputPaths.doNotSendPath,
       sendCsv: result.outputPaths.sendCsvPath,
       doNotSendCsv: result.outputPaths.doNotSendCsvPath,
+      workItems: result.outputPaths.workItemsPath,
+      lookupResults: result.outputPaths.lookupResultsPath,
+      courseFrequenciesJson: result.outputPaths.courseFrequenciesJsonPath,
       coursesAlreadyTaken: result.outputPaths.coursesAlreadyTakenPath,
       expired: result.outputPaths.expiredLogPath,
       greaterThan90: result.outputPaths.greaterThan90LogPath,

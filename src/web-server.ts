@@ -511,7 +511,7 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
   }
 
   const extension = extname(path).toLowerCase();
-  const contentType = extension === ".txt" || extension === ".csv"
+  const contentType = extension === ".txt" || extension === ".csv" || extension === ".jsonl"
     ? "text/plain; charset=utf-8"
     : extension === ".json"
       ? "application/json; charset=utf-8"
@@ -712,6 +712,9 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
     doNotSend: outputPaths.doNotSendPath,
     sendCsv: outputPaths.sendCsvPath,
     doNotSendCsv: outputPaths.doNotSendCsvPath,
+    workItems: outputPaths.workItemsPath,
+    lookupResults: outputPaths.lookupResultsPath,
+    courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
     coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
     expired: outputPaths.expiredLogPath,
     greaterThan90: outputPaths.greaterThan90LogPath,
@@ -740,6 +743,9 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
     doNotSendPath: join(outputDir, doNotSend),
     sendCsvPath: join(outputDir, "Send.csv"),
     doNotSendCsvPath: join(outputDir, "DoNotSend.csv"),
+    workItemsPath: join(outputDir, "work-items.jsonl"),
+    lookupResultsPath: join(outputDir, "lookup-results.jsonl"),
+    courseFrequenciesJsonPath: join(outputDir, "course-frequencies.json"),
     coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: join(outputDir, "expired.txt"),
     greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
@@ -804,6 +810,9 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
       doNotSend: outputPaths.doNotSendPath,
       sendCsv: outputPaths.sendCsvPath,
       doNotSendCsv: outputPaths.doNotSendCsvPath,
+      workItems: outputPaths.workItemsPath,
+      lookupResults: outputPaths.lookupResultsPath,
+      courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -820,6 +829,9 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
       doNotSend: outputPaths.doNotSendPath,
       sendCsv: outputPaths.sendCsvPath,
       doNotSendCsv: outputPaths.doNotSendCsvPath,
+      workItems: outputPaths.workItemsPath,
+      lookupResults: outputPaths.lookupResultsPath,
+      courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath,
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
@@ -1464,8 +1476,11 @@ function pageHtml(): string {
       const labels = {
         send: "Send workbook",
         doNotSend: "Do-not-send workbook",
-        sendCsv: "Live Send CSV",
-        doNotSendCsv: "Live Do-not-send CSV",
+        sendCsv: "Send CSV",
+        doNotSendCsv: "Do-not-send CSV",
+        workItems: "Work queue",
+        lookupResults: "Lookup results",
+        courseFrequenciesJson: "Course frequency data",
         coursesAlreadyTaken: "Course frequency workbook",
         expired: "Expired log",
         greaterThan90: "Greater-than-90 log",

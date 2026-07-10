@@ -1,15 +1,16 @@
 import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
+import { PipelineStore } from "./pipeline-store.js";
 import { buildOutputPaths } from "./paths.js";
 import { RunStateWriter } from "./run-state.js";
 import {
   readEligibleTradesmen,
-  StreamingTradesmenCsvWriter,
   writeCourseFrequencies,
-  writeTradesmenWorkbookFromCsv
+  writeTradesmenCsv,
+  writeTradesmenWorkbook
 } from "./spreadsheet.js";
-import type { OutputPaths, ProgressReporter } from "./types.js";
+import type { BucketedResult, CourseFrequency, OutputPaths, ProgressReporter, Tradesman } from "./types.js";
 import { WashingtonLicenseChecker } from "./washington-checker.js";
 
 export interface RunOptions {
@@ -33,6 +34,33 @@ export interface RunResult {
   courseFrequencyCount: number;
   outputPaths: OutputPaths;
   canceled: boolean;
+}
+
+interface RunContext {
+  options: RunOptions;
+  outputPaths: OutputPaths;
+  store: PipelineStore;
+  runState: RunStateWriter;
+  logger: Logger;
+  reportProgress: ProgressReporter;
+}
+
+interface ImportStageResult {
+  queuedCount: number;
+}
+
+interface LookupStageResult {
+  sendCount: number;
+  doNotSendCount: number;
+  errorCount: number;
+  courseFrequencies: CourseFrequency[];
+  canceled: boolean;
+}
+
+interface ReportStageResult {
+  sendCount: number;
+  doNotSendCount: number;
+  courseFrequencyCount: number;
 }
 
 export async function runWashingtonCheck(options: RunOptions): Promise<RunResult> {
@@ -61,66 +89,38 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   }
 
   logger.logStart();
+  const store = new PipelineStore(outputPaths);
+  const context: RunContext = {
+    options,
+    outputPaths,
+    store,
+    runState,
+    logger,
+    reportProgress
+  };
 
-  const sendWriter = await StreamingTradesmenCsvWriter.create(outputPaths.sendCsvPath);
-  const doNotSendWriter = await StreamingTradesmenCsvWriter.create(outputPaths.doNotSendCsvPath);
-  reportProgress({
-    type: "output",
-    message: `Live pipe-delimited CSV outputs are ready: ${outputPaths.sendCsvPath} and ${outputPaths.doNotSendCsvPath}`,
-    files: {
-      sendCsv: outputPaths.sendCsvPath,
-      doNotSendCsv: outputPaths.doNotSendCsvPath
-    }
-  });
-
-  let result: Awaited<ReturnType<WashingtonLicenseChecker["checkLicenses"]>> | undefined;
+  let lookupResult: LookupStageResult | undefined;
+  let reportResult: ReportStageResult | undefined;
   try {
-    const checker = new WashingtonLicenseChecker(logger, outputPaths, {
-      headed: options.headed,
-      slowMo: options.slowMo,
-      checkDelayMs: options.checkDelayMs ?? 1500,
-      limit: options.limit,
-      onProgress: reportProgress,
-      onResult: async (checkedResult) => {
-        if (checkedResult.bucket === "send") {
-          await sendWriter.add(checkedResult.tradesman);
-        } else {
-          await doNotSendWriter.add(checkedResult.tradesman);
-        }
-        await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
-      },
-      isCanceled: options.isCanceled
-    });
-
-    const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
-      worksheetName: options.worksheet,
-      skipUntilAfterLicenseNumber: options.resumeAfterLicenseNumber,
-      onProgress: reportProgress
-    });
-    result = await checker.checkLicenses(tradesmen);
+    await importWorkItems(context);
+    lookupResult = await processLookupQueue(context);
   } finally {
-    sendWriter.commit();
-    doNotSendWriter.commit();
     await ensureLogFiles(outputPaths);
   }
 
-  if (!result) {
+  if (!lookupResult) {
     throw new Error("Washington check did not return a result.");
   }
 
-  await Promise.all([
-    writeTradesmenWorkbookFromCsv(outputPaths.sendCsvPath, outputPaths.sendPath),
-    writeTradesmenWorkbookFromCsv(outputPaths.doNotSendCsvPath, outputPaths.doNotSendPath),
-    writeCourseFrequencies(result.courseFrequencies, outputPaths.coursesAlreadyTakenPath)
-  ]);
+  reportResult = await generateReports(context, lookupResult);
   await runState.recordFinal({
-    canceled: result.canceled,
+    canceled: lookupResult.canceled,
     outputPaths
   });
 
-  const sendMessage = `Wrote ${sendWriter.count} row(s) to ${outputPaths.sendPath}`;
-  const doNotSendMessage = `Wrote ${doNotSendWriter.count} row(s) to ${outputPaths.doNotSendPath}`;
-  const courseMessage = `Wrote ${result.courseFrequencies.length} course frequency row(s) to ${outputPaths.coursesAlreadyTakenPath}`;
+  const sendMessage = `Wrote ${reportResult.sendCount} row(s) to ${outputPaths.sendPath}`;
+  const doNotSendMessage = `Wrote ${reportResult.doNotSendCount} row(s) to ${outputPaths.doNotSendPath}`;
+  const courseMessage = `Wrote ${reportResult.courseFrequencyCount} course frequency row(s) to ${outputPaths.coursesAlreadyTakenPath}`;
   console.log(sendMessage);
   console.log(doNotSendMessage);
   console.log(courseMessage);
@@ -135,11 +135,138 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   logger.logEnd();
 
   return {
-    sendCount: sendWriter.count,
-    doNotSendCount: doNotSendWriter.count,
-    courseFrequencyCount: result.courseFrequencies.length,
+    sendCount: reportResult.sendCount,
+    doNotSendCount: reportResult.doNotSendCount,
+    courseFrequencyCount: reportResult.courseFrequencyCount,
     outputPaths,
+    canceled: lookupResult.canceled
+  };
+}
+
+async function importWorkItems(context: RunContext): Promise<ImportStageResult> {
+  const { options, outputPaths, store, logger, reportProgress } = context;
+  await store.initialize();
+  reportProgress({
+    type: "import_started",
+    message: "Stage 1 of 3: importing eligible spreadsheet rows into a durable work queue.",
+    files: {
+      workItems: outputPaths.workItemsPath,
+      lookupResults: outputPaths.lookupResultsPath,
+      courseFrequenciesJson: outputPaths.courseFrequenciesJsonPath
+    }
+  });
+
+  let queuedCount = 0;
+  const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
+    worksheetName: options.worksheet,
+    skipUntilAfterLicenseNumber: options.resumeAfterLicenseNumber,
+    onProgress: reportProgress
+  });
+
+  for await (const tradesman of tradesmen) {
+    queuedCount++;
+    const queuedTradesman: Tradesman = {
+      ...tradesman,
+      workItemId: queuedCount
+    };
+    await store.appendWorkItem({
+      id: queuedCount,
+      tradesman: queuedTradesman,
+      status: "queued",
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  reportProgress({
+    type: "import_complete",
+    message: `Stage 1 complete. Queued ${queuedCount} website lookup work item(s).`,
+    current: queuedCount,
+    total: queuedCount
+  });
+
+  return { queuedCount };
+}
+
+async function processLookupQueue(context: RunContext): Promise<LookupStageResult> {
+  const { options, outputPaths, store, logger, runState, reportProgress } = context;
+  const workItems = await store.readWorkItems();
+  reportProgress({
+    type: "lookup_started",
+    message: `Stage 2 of 3: processing ${workItems.length} queued website lookup item(s).`,
+    current: 0,
+    total: workItems.length,
+    remaining: workItems.length
+  });
+
+  let sendCount = 0;
+  let doNotSendCount = 0;
+  const checker = new WashingtonLicenseChecker(logger, outputPaths, {
+    headed: options.headed,
+    slowMo: options.slowMo,
+    checkDelayMs: options.checkDelayMs ?? 1500,
+    limit: options.limit,
+    onProgress: reportProgress,
+    onResult: async (checkedResult: BucketedResult) => {
+      await store.appendLookupResult(checkedResult);
+      if (checkedResult.bucket === "send") {
+        sendCount++;
+      } else {
+        doNotSendCount++;
+      }
+      await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
+    },
+    isCanceled: options.isCanceled
+  });
+
+  const result = await checker.checkLicenses(workItems.map((item) => item.tradesman));
+  await store.writeCourseFrequencies(result.courseFrequencies);
+
+  return {
+    sendCount,
+    doNotSendCount,
+    errorCount: 0,
+    courseFrequencies: result.courseFrequencies,
     canceled: result.canceled
+  };
+}
+
+async function generateReports(context: RunContext, lookupResult: LookupStageResult): Promise<ReportStageResult> {
+  const { outputPaths, store, reportProgress } = context;
+  reportProgress({
+    type: "reports_started",
+    message: "Stage 3 of 3: generating CSV, Excel, and summary reports from durable lookup results."
+  });
+
+  const results = await store.readLookupResults();
+  const sendTradesmen = results.filter((result) => result.bucket === "send").map((result) => result.tradesman);
+  const doNotSendTradesmen = results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman);
+  const courseFrequencies = await store.readCourseFrequencies();
+  const courses = courseFrequencies.length > 0 ? courseFrequencies : lookupResult.courseFrequencies;
+
+  await Promise.all([
+    writeTradesmenCsv(sendTradesmen, outputPaths.sendCsvPath),
+    writeTradesmenCsv(doNotSendTradesmen, outputPaths.doNotSendCsvPath),
+    writeTradesmenWorkbook(sendTradesmen, outputPaths.sendPath),
+    writeTradesmenWorkbook(doNotSendTradesmen, outputPaths.doNotSendPath),
+    writeCourseFrequencies(courses, outputPaths.coursesAlreadyTakenPath)
+  ]);
+
+  reportProgress({
+    type: "reports_complete",
+    message: `Stage 3 complete. Generated reports from ${results.length} stored lookup result(s).`,
+    files: {
+      sendCsv: outputPaths.sendCsvPath,
+      doNotSendCsv: outputPaths.doNotSendCsvPath,
+      send: outputPaths.sendPath,
+      doNotSend: outputPaths.doNotSendPath,
+      coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath
+    }
+  });
+
+  return {
+    sendCount: sendTradesmen.length,
+    doNotSendCount: doNotSendTradesmen.length,
+    courseFrequencyCount: courses.length
   };
 }
 

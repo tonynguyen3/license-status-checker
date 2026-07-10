@@ -1,6 +1,7 @@
 export type LicenseBucket = "send" | "doNotSend";
 
 export interface Tradesman {
+  workItemId?: number;
   licenseType?: string;
   licenseNumber: string;
   name?: string;
@@ -45,6 +46,9 @@ export interface OutputPaths {
   doNotSendPath: string;
   sendCsvPath: string;
   doNotSendCsvPath: string;
+  workItemsPath: string;
+  lookupResultsPath: string;
+  courseFrequenciesJsonPath: string;
   coursesAlreadyTakenPath: string;
   expiredLogPath: string;
   greaterThan90LogPath: string;

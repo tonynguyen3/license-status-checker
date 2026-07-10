@@ -414,6 +414,16 @@ export async function writeTradesmenWorkbookFromCsv(csvPath: string, workbookPat
   await writeTradesmenWorkbook(tradesmen, workbookPath);
 }
 
+export async function writeTradesmenCsv(tradesmen: Tradesman[], path: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const header = TRADESMAN_COLUMNS.map((column) => pipeDelimitedCell(column.header)).join("|");
+  const rows = tradesmen.map((tradesman) => {
+    const row = tradesmanRow(tradesman);
+    return TRADESMAN_COLUMNS.map((column) => pipeDelimitedCell(row[column.key])).join("|");
+  });
+  await writeFile(path, `${[header, ...rows].join("\n")}\n`, "utf8");
+}
+
 export async function readTradesmenWorkbook(path: string): Promise<Tradesman[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(path);

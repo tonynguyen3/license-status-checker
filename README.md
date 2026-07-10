@@ -38,6 +38,9 @@ license-status-checker/
     ListToCheck.xlsx
     Send.csv
     DoNotSend.csv
+    work-items.jsonl
+    lookup-results.jsonl
+    course-frequencies.json
     Send-{date}.xlsx
     DoNotSend-{date}.xlsx
     coursesAlreadyTaken.xlsx
@@ -81,8 +84,11 @@ Spreadsheet rows are filtered before the app opens the Washington website:
 
 Generated output files are written to the output directory. By default, that is also `Files/`. You can change it with `--out-dir`.
 
-- `Send.csv`: live pipe-delimited CSV output for send rows, appended during the website checks.
-- `DoNotSend.csv`: live pipe-delimited CSV output for do-not-send rows, appended during the website checks.
+- `work-items.jsonl`: durable queue of eligible spreadsheet rows created by the import stage.
+- `lookup-results.jsonl`: durable website lookup results written by the worker stage.
+- `course-frequencies.json`: durable course frequency data captured by the worker stage.
+- `Send.csv`: pipe-delimited CSV report generated from stored lookup results.
+- `DoNotSend.csv`: pipe-delimited CSV report generated from stored lookup results.
 - `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits.
 - `DoNotSend-{date}.xlsx`: license holders who should not be contacted, with a reason when available.
 - `coursesAlreadyTaken.xlsx`: course title/code frequency report from licenses that already show completed CE credits.
@@ -157,13 +163,15 @@ If Washington returns an HTTP `429` response, or appears to show an F5/rate-limi
 
 ### Streaming And Resume Behavior
 
-The web run pipeline is designed to be friendlier to cloud or small-VM hosting:
+The web run pipeline is designed to be friendlier to cloud or small-VM hosting. Runs are split into three stages:
 
-- spreadsheet rows are streamed from the input workbook instead of loading every row into memory at once
-- `Send.csv` and `DoNotSend.csv` are written incrementally as each license result is bucketed
-- final Excel workbooks are generated from the CSV files after the website checks finish
-- run progress is persisted to `run-state.json` inside each run's output folder
-- the UI progress feed is summarized so it does not emit every row to the browser
+1. Import/preprocess: spreadsheet rows are streamed from the input workbook, filtered, and written into `work-items.jsonl`.
+2. Website lookup: queued work items are checked against Washington L&I and each result is written into `lookup-results.jsonl`.
+3. Report generation: `Send.csv`, `DoNotSend.csv`, `Send-{date}.xlsx`, `DoNotSend-{date}.xlsx`, and course reports are generated from the stored lookup results.
+
+The durable JSONL files make the workflow less tightly coupled to the browser worker. They also make future cloud deployments easier because the web UI, queue worker, and report generator can become separate processes later without changing the run folder contract.
+
+Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
 
 Each web upload or email-loaded workbook is stored under a timestamped run folder:
 
@@ -173,6 +181,9 @@ Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
   output/
     Send.csv
     DoNotSend.csv
+    work-items.jsonl
+    lookup-results.jsonl
+    course-frequencies.json
     Send-{date}.xlsx
     DoNotSend-{date}.xlsx
     coursesAlreadyTaken.xlsx
