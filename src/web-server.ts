@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
@@ -48,6 +48,8 @@ interface RunStartOptions {
   headed: boolean;
   checkDelayMs: number;
   limit?: number;
+  resumeAfterLicenseNumber?: string;
+  resumedFromRunId?: string;
 }
 
 interface EmailPollConfig {
@@ -129,6 +131,12 @@ const server = createServer(async (request, response) => {
     const deleteMatch = url.pathname.match(/^\/runs\/([^/]+)\/delete$/);
     if (request.method === "POST" && deleteMatch) {
       await handleDeleteRun(deleteMatch[1], response);
+      return;
+    }
+
+    const resumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
+    if (request.method === "POST" && resumeMatch) {
+      await handleResumeRun(resumeMatch[1], request, response);
       return;
     }
 
@@ -244,6 +252,61 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
   sendJson(response, 200, { runId: run.id });
 }
 
+async function handleResumeRun(sourceRunId: string, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const sourceRunDir = runDirectory(sourceRunId);
+  if (!sourceRunDir) {
+    sendJson(response, 400, { error: "Invalid run id." });
+    return;
+  }
+
+  const sourceInputPath = join(sourceRunDir, "ListToCheck.xlsx");
+  try {
+    const inputStat = await stat(sourceInputPath);
+    if (!inputStat.isFile()) {
+      sendJson(response, 404, { error: "Original input workbook is not available for this run." });
+      return;
+    }
+  } catch {
+    sendJson(response, 404, { error: "Original input workbook is not available for this run." });
+    return;
+  }
+
+  const sourceOutputPaths = await outputPathsForRun(sourceRunId);
+  if (!sourceOutputPaths) {
+    sendJson(response, 404, { error: "Run output is not available yet." });
+    return;
+  }
+
+  const sourceState = await readRunState(sourceOutputPaths.runStatePath);
+  if (!sourceState) {
+    sendJson(response, 400, { error: "This run does not have durable state to resume from." });
+    return;
+  }
+
+  if (sourceState.phase === "complete") {
+    sendJson(response, 409, { error: "This run already completed successfully." });
+    return;
+  }
+
+  const resumeAfterLicenseNumber = sourceState.checkpoint?.licenseNumber;
+  if (!resumeAfterLicenseNumber) {
+    sendJson(response, 400, { error: "This run does not have a checked license checkpoint yet." });
+    return;
+  }
+
+  const upload = await copyWorkbookForResume(sourceInputPath, sourceRunId);
+  const run = startRun(upload, {
+    worksheet: sourceState.runOptions?.worksheet,
+    headed: sourceState.runOptions?.headed ?? false,
+    checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 3000,
+    limit: sourceState.runOptions?.limit,
+    resumeAfterLicenseNumber,
+    resumedFromRunId: sourceRunId
+  }, requestBaseUrl(request));
+
+  sendJson(response, 200, { runId: run.id, resumedFromRunId: sourceRunId });
+}
+
 function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: string, onFinished?: (run: WebRun) => void): WebRun {
   const runId = upload.id;
   const outputDir = join(dirname(upload.path), "output");
@@ -260,11 +323,14 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
   void runWashingtonCheck({
     input: upload.path,
     outDir: outputDir,
+    runId,
     worksheet: options.worksheet,
     headed: options.headed,
     slowMo: 0,
     checkDelayMs: options.checkDelayMs,
     limit: options.limit,
+    resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
+    resumedFromRunId: options.resumedFromRunId,
     onProgress: (update) => emit(run, update),
     isCanceled: () => run.cancelRequested
   })
@@ -290,6 +356,25 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
     });
 
   return run;
+}
+
+async function copyWorkbookForResume(sourceInputPath: string, sourceRunId: string): Promise<UploadedWorkbook> {
+  const uploadId = createRunFolderName();
+  const uploadDir = join(rootDir, uploadId);
+  const inputPath = join(uploadDir, "ListToCheck.xlsx");
+  await mkdir(uploadDir, { recursive: true });
+  await copyFile(sourceInputPath, inputPath);
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(inputPath);
+  const uploaded: UploadedWorkbook = {
+    id: uploadId,
+    path: inputPath,
+    originalName: `Resume of ${sourceRunId}`,
+    worksheets: workbook.worksheets.map((worksheet) => worksheet.name)
+  };
+  uploads.set(uploadId, uploaded);
+  return uploaded;
 }
 
 async function maybeEmailResults(
@@ -638,22 +723,28 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
 }
 
 async function readRunStateSummary(path: string): Promise<PreviousRunStateSummary | undefined> {
+  const state = await readRunState(path);
+  if (!state) return undefined;
+
+  return {
+    phase: state.phase,
+    startedAt: formatDateTime(state.startedAt),
+    updatedAt: formatDateTime(state.updatedAt),
+    completedAt: state.completedAt ? formatDateTime(state.completedAt) : undefined,
+    eligible: state.counts.eligible,
+    checked: state.counts.checked,
+    send: state.counts.send,
+    doNotSend: state.counts.doNotSend,
+    errors: state.counts.errors,
+    lastLicenseNumber: state.checkpoint?.licenseNumber,
+    lastMessage: state.lastMessage,
+    error: state.error
+  };
+}
+
+async function readRunState(path: string): Promise<DurableRunState | undefined> {
   try {
-    const state = JSON.parse(await readFile(path, "utf8")) as DurableRunState;
-    return {
-      phase: state.phase,
-      startedAt: formatDateTime(state.startedAt),
-      updatedAt: formatDateTime(state.updatedAt),
-      completedAt: state.completedAt ? formatDateTime(state.completedAt) : undefined,
-      eligible: state.counts.eligible,
-      checked: state.counts.checked,
-      send: state.counts.send,
-      doNotSend: state.counts.doNotSend,
-      errors: state.counts.errors,
-      lastLicenseNumber: state.checkpoint?.licenseNumber,
-      lastMessage: state.lastMessage,
-      error: state.error
-    };
+    return JSON.parse(await readFile(path, "utf8")) as DurableRunState;
   } catch {
     return undefined;
   }
@@ -1150,6 +1241,19 @@ function pageHtml(): string {
       await setEmailPolling("/email-poll/disable");
     });
 
+    const monitorRunId = new URLSearchParams(window.location.search).get("runId");
+    if (monitorRunId) {
+      feed.innerHTML = "";
+      files.innerHTML = "";
+      bar.style.width = "0%";
+      state.isRunning = true;
+      state.currentRunId = monitorRunId;
+      state.stopRequested = false;
+      setBusy(true);
+      connect(monitorRunId);
+      setStatus("Monitoring run " + monitorRunId + ".");
+    }
+
     function connect(runId) {
       closeProgressStream();
       state.eventSource = new EventSource("/runs/" + runId + "/events");
@@ -1356,6 +1460,7 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
           ${runFileLink(run.files.exception)}
           ${runFileLink(run.files.runState)}
         </div>
+        ${resumeRunButton(run)}
         <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>
     </section>
@@ -1388,6 +1493,7 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     .run-error { color:var(--danger); }
     button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
     button:hover { background:var(--panel); border-color:var(--gold); }
+    .resume-run { color:var(--accent-strong); }
     .delete-run { color:var(--danger); }
     .delete-run:disabled { cursor:not-allowed; opacity:.65; }
     .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
@@ -1408,6 +1514,30 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     ${rows || '<div class="empty">No completed runs found yet.</div>'}
   </main>
   <script>
+    document.querySelectorAll(".resume-run").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runId = button.dataset.runId;
+        if (!runId) return;
+        if (!confirm("Resume run " + runId + " in a new run folder?")) return;
+
+        button.disabled = true;
+        button.textContent = "Resuming...";
+
+        try {
+          const response = await fetch("/runs/" + encodeURIComponent(runId) + "/resume", { method: "POST" });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.error || "Could not resume run.");
+          }
+          window.location.href = "/?runId=" + encodeURIComponent(result.runId);
+        } catch (error) {
+          alert(error instanceof Error ? error.message : String(error));
+          button.disabled = false;
+          button.textContent = "Resume";
+        }
+      });
+    });
+
     document.querySelectorAll(".delete-run").forEach((button) => {
       button.addEventListener("click", async () => {
         const runId = button.dataset.runId;
@@ -1438,6 +1568,11 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
   </script>
 </body>
 </html>`;
+}
+
+function resumeRunButton(run: PreviousRunSummary): string {
+  if (!run.state?.lastLicenseNumber || run.state.phase === "complete") return "";
+  return `<button type="button" class="resume-run" data-run-id="${escapeHtml(run.id)}">Resume</button>`;
 }
 
 function runStateSummary(state: PreviousRunStateSummary | undefined): string {

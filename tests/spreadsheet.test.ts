@@ -174,6 +174,52 @@ describe("readEligibleTradesmen", () => {
     await expect(readFile(outputPaths.expiredLogPath, "utf8")).resolves.toContain("Skipped Electricians!3 (EL-OLD)");
     expect(logger.consoleMessages.at(-1)).toContain("It will now check 2 license(s).");
   });
+
+  it("can resume by streaming only eligible rows after a checkpoint license", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const inputPath = join(dir, "ListToCheck.xlsx");
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const workbook = new ExcelJS.Workbook();
+    const electricians = workbook.addWorksheet("Electricians");
+    addHeader(electricians);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
+    electricians.addRow(["EL", "EL-2", "Elle", "2 Main", "", "Everett", "WA", "98201", "8/1/2026"]);
+    electricians.addRow(["EL", "EL-3", "Ellis", "3 Main", "", "Tacoma", "WA", "98401", "8/2/2026"]);
+    await workbook.xlsx.writeFile(inputPath);
+
+    const logger = new TestLogger();
+    const streamed = [];
+
+    for await (const tradesman of readEligibleTradesmen(inputPath, logger, outputPaths, {
+      skipUntilAfterLicenseNumber: "EL-2"
+    })) {
+      streamed.push(tradesman);
+    }
+
+    expect(streamed.map((tradesman) => tradesman.licenseNumber)).toEqual(["EL-3"]);
+  });
+
+  it("fails resume when the checkpoint license is not found in eligible rows", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const inputPath = join(dir, "ListToCheck.xlsx");
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const workbook = new ExcelJS.Workbook();
+    const electricians = workbook.addWorksheet("Electricians");
+    addHeader(electricians);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
+    await workbook.xlsx.writeFile(inputPath);
+
+    const logger = new TestLogger();
+    const stream = readEligibleTradesmen(inputPath, logger, outputPaths, {
+      skipUntilAfterLicenseNumber: "EL-MISSING"
+    });
+
+    await expect(async () => {
+      for await (const _tradesman of stream) {
+        // Exhaust the stream to trigger checkpoint validation.
+      }
+    }).rejects.toThrow('Resume checkpoint license "EL-MISSING" was not found in the eligible spreadsheet rows.');
+  });
 });
 
 describe("StreamingTradesmenWorkbookWriter", () => {

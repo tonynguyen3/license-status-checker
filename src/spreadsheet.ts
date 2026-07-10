@@ -14,6 +14,7 @@ const SUPPORTED_WORKSHEET_NAME_SET = new Set(SUPPORTED_WORKSHEET_NAMES.map((name
 
 interface ReadSpreadsheetOptions {
   worksheetName?: string;
+  skipUntilAfterLicenseNumber?: string;
   onProgress?: ProgressReporter;
 }
 
@@ -89,6 +90,9 @@ export async function* readEligibleTradesmen(
   let rowsRead = 0;
   let eligibleCount = 0;
   let foundRequestedWorksheet = false;
+  const resumeAfterLicenseNumber = options.skipUntilAfterLicenseNumber?.trim();
+  let skippingForResume = resumeAfterLicenseNumber !== undefined && resumeAfterLicenseNumber.length > 0;
+  let skippedForResume = 0;
 
   if (options.worksheetName) {
     logger.writeToConsole(`Only reading worksheet "${options.worksheetName}".`);
@@ -176,6 +180,19 @@ export async function* readEligibleTradesmen(
         continue;
       }
 
+      if (skippingForResume) {
+        skippedForResume++;
+        if (normalizeLicenseNumber(licenseNumber) === normalizeLicenseNumber(resumeAfterLicenseNumber)) {
+          skippingForResume = false;
+          options.onProgress?.({
+            type: "resume_checkpoint_found",
+            message: `Resume checkpoint ${licenseNumber} found after skipping ${skippedForResume} eligible row(s). Continuing with the next eligible row.`,
+            current: rowsRead
+          });
+        }
+        continue;
+      }
+
       yield {
         licenseType: asText(row.getCell(1).value),
         licenseNumber,
@@ -199,6 +216,10 @@ export async function* readEligibleTradesmen(
 
   if (options.worksheetName && !foundRequestedWorksheet) {
     throw new Error(`Worksheet "${options.worksheetName}" was not found. Supported worksheets: ${supportedWorksheetNamesForMessage()}`);
+  }
+
+  if (skippingForResume && resumeAfterLicenseNumber) {
+    throw new Error(`Resume checkpoint license "${resumeAfterLicenseNumber}" was not found in the eligible spreadsheet rows.`);
   }
 
   logger.writeToConsole(
@@ -229,6 +250,10 @@ function shouldReadWorksheet(sheetName: string, worksheetName?: string): boolean
 
 function supportedWorksheetNamesForMessage(): string {
   return SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ");
+}
+
+function normalizeLicenseNumber(licenseNumber: string | undefined): string {
+  return licenseNumber?.trim().toUpperCase() ?? "";
 }
 
 async function primeWorkbookReaderMetadata(workbook: ExcelJS.stream.xlsx.WorkbookReader, inputPath: string): Promise<void> {

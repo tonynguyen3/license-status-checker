@@ -27,15 +27,32 @@ export interface DurableRunState {
   lastMessage?: string;
   files?: Record<string, string>;
   error?: string;
+  runOptions?: DurableRunOptions;
+}
+
+export interface DurableRunOptions {
+  worksheet?: string;
+  headed: boolean;
+  slowMo: number;
+  checkDelayMs: number;
+  limit?: number;
+  resumeAfterLicenseNumber?: string;
+  resumedFromRunId?: string;
+}
+
+interface RunStateInitialValues {
+  id?: string;
+  runOptions?: DurableRunOptions;
 }
 
 export class RunStateWriter {
   private readonly state: DurableRunState;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly path: string) {
+  constructor(private readonly path: string, initialValues: RunStateInitialValues = {}) {
     const now = new Date().toISOString();
     this.state = {
+      id: initialValues.id,
       phase: "created",
       startedAt: now,
       updatedAt: now,
@@ -47,7 +64,8 @@ export class RunStateWriter {
         send: 0,
         doNotSend: 0,
         errors: 0
-      }
+      },
+      runOptions: initialValues.runOptions
     };
   }
 

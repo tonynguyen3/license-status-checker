@@ -10,11 +10,14 @@ import { WashingtonLicenseChecker } from "./washington-checker.js";
 export interface RunOptions {
   input: string;
   outDir: string;
+  runId?: string;
   worksheet?: string;
   headed: boolean;
   slowMo: number;
   checkDelayMs?: number;
   limit?: number;
+  resumeAfterLicenseNumber?: string;
+  resumedFromRunId?: string;
   onProgress?: ProgressReporter;
   isCanceled?: () => boolean;
 }
@@ -29,7 +32,18 @@ export interface RunResult {
 
 export async function runWashingtonCheck(options: RunOptions): Promise<RunResult> {
   const outputPaths = buildOutputPaths(options.outDir);
-  const runState = new RunStateWriter(outputPaths.runStatePath);
+  const runState = new RunStateWriter(outputPaths.runStatePath, {
+    id: options.runId,
+    runOptions: {
+      worksheet: options.worksheet,
+      headed: options.headed,
+      slowMo: options.slowMo,
+      checkDelayMs: options.checkDelayMs ?? 3000,
+      limit: options.limit,
+      resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
+      resumedFromRunId: options.resumedFromRunId
+    }
+  });
   await runState.writeInitial();
   const reportProgress: ProgressReporter = (update) => {
     options.onProgress?.(update);
@@ -67,6 +81,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
 
     const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
       worksheetName: options.worksheet,
+      skipUntilAfterLicenseNumber: options.resumeAfterLicenseNumber,
       onProgress: reportProgress
     });
     result = await checker.checkLicenses(tradesmen);
