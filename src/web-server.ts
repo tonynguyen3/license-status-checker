@@ -548,7 +548,8 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
     coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: join(outputDir, "expired.txt"),
     greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
-    exceptionLogPath: join(outputDir, "exception.txt")
+    exceptionLogPath: join(outputDir, "exception.txt"),
+    runStatePath: join(outputDir, "run-state.json")
   };
 }
 

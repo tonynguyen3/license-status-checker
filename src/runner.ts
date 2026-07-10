@@ -2,6 +2,7 @@ import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
+import { RunStateWriter } from "./run-state.js";
 import { readEligibleTradesmen, StreamingTradesmenWorkbookWriter, writeCourseFrequencies } from "./spreadsheet.js";
 import type { OutputPaths, ProgressReporter } from "./types.js";
 import { WashingtonLicenseChecker } from "./washington-checker.js";
@@ -27,8 +28,14 @@ export interface RunResult {
 }
 
 export async function runWashingtonCheck(options: RunOptions): Promise<RunResult> {
-  const logger = new Logger(options.onProgress);
   const outputPaths = buildOutputPaths(options.outDir);
+  const runState = new RunStateWriter(outputPaths.runStatePath);
+  await runState.writeInitial();
+  const reportProgress: ProgressReporter = (update) => {
+    options.onProgress?.(update);
+    void runState.recordProgress(update);
+  };
+  const logger = new Logger(reportProgress);
 
   if (!existsSync(options.input)) {
     throw new Error(`Input spreadsheet not found: ${options.input}`);
@@ -46,20 +53,21 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
       slowMo: options.slowMo,
       checkDelayMs: options.checkDelayMs ?? 3000,
       limit: options.limit,
-      onProgress: options.onProgress,
-      onResult: (checkedResult) => {
+      onProgress: reportProgress,
+      onResult: async (checkedResult) => {
         if (checkedResult.bucket === "send") {
           sendWriter.add(checkedResult.tradesman);
         } else {
           doNotSendWriter.add(checkedResult.tradesman);
         }
+        await runState.recordResult(checkedResult.bucket, checkedResult.tradesman);
       },
       isCanceled: options.isCanceled
     });
 
     const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
       worksheetName: options.worksheet,
-      onProgress: options.onProgress
+      onProgress: reportProgress
     });
     result = await checker.checkLicenses(tradesmen);
   } finally {
@@ -75,6 +83,10 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   }
 
   await writeCourseFrequencies(result.courseFrequencies, outputPaths.coursesAlreadyTakenPath);
+  await runState.recordFinal({
+    canceled: result.canceled,
+    outputPaths
+  });
 
   const sendMessage = `Wrote ${sendWriter.count} row(s) to ${outputPaths.sendPath}`;
   const doNotSendMessage = `Wrote ${doNotSendWriter.count} row(s) to ${outputPaths.doNotSendPath}`;
@@ -82,9 +94,9 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   console.log(sendMessage);
   console.log(doNotSendMessage);
   console.log(courseMessage);
-  options.onProgress?.({ type: "output", message: sendMessage, files: { send: outputPaths.sendPath } });
-  options.onProgress?.({ type: "output", message: doNotSendMessage, files: { doNotSend: outputPaths.doNotSendPath } });
-  options.onProgress?.({
+  reportProgress({ type: "output", message: sendMessage, files: { send: outputPaths.sendPath } });
+  reportProgress({ type: "output", message: doNotSendMessage, files: { doNotSend: outputPaths.doNotSendPath } });
+  reportProgress({
     type: "output",
     message: courseMessage,
     files: { coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath }

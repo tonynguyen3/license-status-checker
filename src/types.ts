@@ -44,6 +44,7 @@ export interface OutputPaths {
   expiredLogPath: string;
   greaterThan90LogPath: string;
   exceptionLogPath: string;
+  runStatePath: string;
 }
 
 export interface ProgressUpdate {
