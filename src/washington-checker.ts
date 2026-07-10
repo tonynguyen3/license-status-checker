@@ -149,17 +149,23 @@ export class WashingtonLicenseChecker {
             this.outputPaths.exceptionLogPath
           );
           errorCount++;
+          const isRateLimited = error instanceof WashingtonRateLimitError;
+          this.options.onProgress?.({
+            type: isRateLimited ? "rate_limited" : "website_check_error",
+            message: isRateLimited
+              ? `Washington site returned a rate-limit response while checking ${describeTradesman(tradesman)}. The run stopped before checking more licenses. Use the Resume button on Previous Runs to continue later.`
+              : `Website check error for ${describeTradesman(tradesman)}. See exception.txt for details.`,
+            current: checkedCount,
+            total,
+            remaining: remainingChecks(total, checkedCount),
+            licenseNumber: tradesman.licenseNumber,
+            errorCount,
+            canResume: checkedCount > 0,
+            rateLimited: isRateLimited
+          });
 
-          if (error instanceof WashingtonRateLimitError) {
+          if (isRateLimited) {
             canceled = true;
-            this.options.onProgress?.({
-              type: "rate_limited",
-              message:
-                "Washington site returned a rate-limit response. The run stopped before checking more licenses.",
-              current: checkedCount,
-              total,
-              remaining: remainingChecks(total, checkedCount)
-            });
             break;
           }
         } finally {
@@ -174,7 +180,8 @@ export class WashingtonLicenseChecker {
             message: `Checked ${checkedCount}${total === undefined ? "" : ` of ${total}`} license(s). Last checked: ${describeTradesman(tradesman)}. Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
             current: checkedCount,
             total,
-            remaining: remainingChecks(total, checkedCount)
+            remaining: remainingChecks(total, checkedCount),
+            errorCount
           });
         }
       }
@@ -188,7 +195,9 @@ export class WashingtonLicenseChecker {
             : "There were no eligible licenses to check.",
         current: checkedCount,
         total,
-        remaining: canceled ? remainingChecks(total, checkedCount) : 0
+        remaining: canceled ? remainingChecks(total, checkedCount) : 0,
+        errorCount,
+        canResume: canceled && checkedCount > 0
       });
 
       return {

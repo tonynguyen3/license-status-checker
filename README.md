@@ -124,14 +124,14 @@ npm start -- --input /path/to/ListToCheck.xlsx --out-dir /path/to/Files
 npm start -- --worksheet Electricians
 npm start -- --worksheet "Plumber Trainees" --limit 5
 npm start -- --headed
-npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 1000
+npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 1500
 ```
 
 `--headed` opens the browser visibly, which is helpful while validating selectors against the state website.
 
 `--slow-mo` is a Playwright/browser debugging option. It slows down low-level browser actions such as navigation, locator operations, clicks, and typing. It is most useful with `--headed` when you want to watch what the browser is doing. It does not guarantee a clean pause between one license row and the next.
 
-`--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `1000`, which waits about 1 second between license rows.
+`--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `1500`, which waits about 1.5 seconds between license rows.
 
 ## Web Interface
 
@@ -250,7 +250,7 @@ Add these optional settings to `.env`:
 EMAIL_POLL_TIME=06:00
 EMAIL_POLL_WORKSHEET=Electricians
 EMAIL_POLL_LIMIT=50
-EMAIL_POLL_CHECK_DELAY_MS=1000
+EMAIL_POLL_CHECK_DELAY_MS=1500
 EMAIL_POLL_HEADED=false
 ```
 

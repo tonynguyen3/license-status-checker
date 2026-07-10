@@ -59,6 +59,9 @@ export interface ProgressUpdate {
   total?: number;
   remaining?: number;
   licenseNumber?: string;
+  errorCount?: number;
+  canResume?: boolean;
+  rateLimited?: boolean;
   files?: Record<string, string>;
 }
 

@@ -43,7 +43,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
       worksheet: options.worksheet,
       headed: options.headed,
       slowMo: options.slowMo,
-      checkDelayMs: options.checkDelayMs ?? 1000,
+      checkDelayMs: options.checkDelayMs ?? 1500,
       limit: options.limit,
       resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
       resumedFromRunId: options.resumedFromRunId
@@ -78,7 +78,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
     const checker = new WashingtonLicenseChecker(logger, outputPaths, {
       headed: options.headed,
       slowMo: options.slowMo,
-      checkDelayMs: options.checkDelayMs ?? 1000,
+      checkDelayMs: options.checkDelayMs ?? 1500,
       limit: options.limit,
       onProgress: reportProgress,
       onResult: async (checkedResult) => {

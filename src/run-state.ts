@@ -27,6 +27,9 @@ export interface DurableRunState {
   lastMessage?: string;
   files?: Record<string, string>;
   error?: string;
+  lastError?: string;
+  rateLimited?: boolean;
+  canResume?: boolean;
   runOptions?: DurableRunOptions;
 }
 
@@ -93,18 +96,32 @@ export class RunStateWriter {
     if (update.type === "checks_started" || update.type === "checks_progress") {
       this.state.phase = "checking";
       this.state.counts.checked = update.current ?? this.state.counts.checked;
+      this.state.counts.errors = update.errorCount ?? this.state.counts.errors;
+    }
+
+    if (update.type === "website_check_error") {
+      this.state.phase = "checking";
+      this.state.counts.checked = update.current ?? this.state.counts.checked;
+      this.state.counts.errors = update.errorCount ?? this.state.counts.errors + 1;
+      this.state.lastError = update.message;
     }
 
     if (update.type === "rate_limited") {
       this.state.phase = "canceled";
       this.state.canceled = true;
       this.state.counts.checked = update.current ?? this.state.counts.checked;
+      this.state.counts.errors = update.errorCount ?? this.state.counts.errors;
+      this.state.lastError = update.message;
+      this.state.rateLimited = true;
+      this.state.canResume = update.canResume ?? true;
     }
 
     if (update.type === "checks_canceled") {
       this.state.phase = "canceled";
       this.state.canceled = true;
       this.state.counts.checked = update.current ?? this.state.counts.checked;
+      this.state.counts.errors = update.errorCount ?? this.state.counts.errors;
+      this.state.canResume = update.canResume ?? this.state.counts.checked > 0;
     }
 
     if (update.type === "checks_complete") {
@@ -141,6 +158,7 @@ export class RunStateWriter {
   async recordFinal(result: { canceled: boolean; outputPaths: OutputPaths; error?: string }): Promise<void> {
     this.state.phase = result.error ? "error" : result.canceled ? "canceled" : "complete";
     this.state.canceled = result.canceled;
+    this.state.canResume = result.canceled && Boolean(this.state.checkpoint?.licenseNumber);
     this.state.completedAt = new Date().toISOString();
     this.state.files = {
       send: result.outputPaths.sendPath,

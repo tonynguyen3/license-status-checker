@@ -261,7 +261,7 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
     checkDelayMs:
       Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
         ? Math.round(body.checkDelaySeconds * 1000)
-        : 1000,
+        : 1500,
     limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined
   }, requestBaseUrl(request));
 
@@ -320,7 +320,7 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
   const run = startRun(upload, {
     worksheet: sourceState.runOptions?.worksheet,
     headed: sourceState.runOptions?.headed ?? false,
-    checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 1000,
+    checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 1500,
     limit: sourceState.runOptions?.limit,
     resumeAfterLicenseNumber,
     resumedFromRunId: sourceRunId
@@ -850,6 +850,7 @@ async function existingRunFileLinks(outputPaths: OutputPaths, files: Record<stri
 async function readRunStateSummary(path: string): Promise<PreviousRunStateSummary | undefined> {
   const state = await readRunState(path);
   if (!state) return undefined;
+  const exceptionSummary = await readExceptionSummary(path);
 
   return {
     phase: state.phase,
@@ -860,13 +861,38 @@ async function readRunStateSummary(path: string): Promise<PreviousRunStateSummar
     checked: state.counts.checked,
     send: state.counts.send,
     doNotSend: state.counts.doNotSend,
-    errors: state.counts.errors,
+    errors: Math.max(state.counts.errors, exceptionSummary.count),
+    canceled: state.canceled,
+    canResume: state.canResume ?? (state.canceled && Boolean(state.checkpoint?.licenseNumber)),
+    rateLimited: state.rateLimited ?? exceptionSummary.rateLimited,
     lastLicenseNumber: state.checkpoint?.licenseNumber,
     lastMessage: state.lastMessage,
+    lastError: state.lastError ?? exceptionSummary.lastError,
     error: state.error,
     resumeAfterLicenseNumber: state.runOptions?.resumeAfterLicenseNumber,
     resumedFromRunId: state.runOptions?.resumedFromRunId
   };
+}
+
+async function readExceptionSummary(runStatePath: string): Promise<{ count: number; lastError?: string; rateLimited: boolean }> {
+  const exceptionPath = join(dirname(runStatePath), "exception.txt");
+  try {
+    const content = await readFile(exceptionPath, "utf8");
+    if (!content.trim() || content.includes("There were no exceptions.")) {
+      return { count: 0, rateLimited: false };
+    }
+
+    const count = (content.match(/^License /gm) ?? []).length || content.trim().split(/\n\s*\n/).filter(Boolean).length;
+    const entries = content.split(/(?=^License )/gm).map((entry) => entry.trim()).filter(Boolean);
+    const lastError = entries.at(-1)?.split("\n").slice(0, 3).join(" ");
+    return {
+      count,
+      lastError,
+      rateLimited: /429|rate-limit|rate limit|F5/i.test(content)
+    };
+  } catch {
+    return { count: 0, rateLimited: false };
+  }
 }
 
 async function readRunState(path: string): Promise<DurableRunState | undefined> {
@@ -1072,14 +1098,14 @@ function emailPollConfig(): EmailPollConfig {
     ? Boolean(time)
     : parseBoolean(process.env.EMAIL_POLL_ENABLED);
   const limit = Number(process.env.EMAIL_POLL_LIMIT);
-  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 1000);
+  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 1500);
 
   return {
     enabled,
     time,
     worksheet: process.env.EMAIL_POLL_WORKSHEET || undefined,
     headed: parseBoolean(process.env.EMAIL_POLL_HEADED),
-    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 1000,
+    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 1500,
     limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     baseUrl: process.env.EMAIL_BASE_URL ?? `http://localhost:${port}`
   };
@@ -1208,7 +1234,7 @@ function pageHtml(): string {
         </div>
         <div>
           <label for="checkDelay">Pause between website checks</label>
-          <input id="checkDelay" type="number" min="0" step="0.5" value="1">
+          <input id="checkDelay" type="number" min="0" step="0.5" value="1.5">
         </div>
         <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         <button id="run" disabled>Run Check</button>
@@ -1509,7 +1535,12 @@ function pageHtml(): string {
         checked: Number(runState.checked || 0),
         send: Number(runState.send || 0),
         doNotSend: Number(runState.doNotSend || 0),
-        errors: Number(runState.errors || 0)
+        errors: Number(runState.errors || 0),
+        phase: runState.phase || payload.status,
+        canceled: Boolean(runState.canceled),
+        canResume: Boolean(runState.canResume),
+        rateLimited: Boolean(runState.rateLimited),
+        lastError: runState.lastError || ""
       };
       const percent = counts.eligible > 0
         ? Math.round((counts.checked / counts.eligible) * 100)
@@ -1526,8 +1557,29 @@ function pageHtml(): string {
     }
 
     function latestRunMeta(status, counts, message) {
-      const base = "Status: " + status + ". Checked " + counts.checked + " of " + counts.eligible + " eligible license(s). Send: " + counts.send + ". Do-not-send: " + counts.doNotSend + ". Errors: " + counts.errors + ".";
-      return message ? base + " Last message: " + message : base;
+      const parts = [
+        "Status: " + status + ".",
+        "Phase: " + (counts.phase || status) + ".",
+        "Can resume: " + (counts.canResume ? "yes" : "no") + ".",
+        "Checked " + counts.checked + " of " + eligibleLabel(counts) + " eligible license(s).",
+        "Send: " + counts.send + ".",
+        "Do-not-send: " + counts.doNotSend + ".",
+        "Errors: " + counts.errors + "."
+      ];
+      if (counts.rateLimited) {
+        parts.push("Washington rate limit detected. Use the Resume button on Previous Runs to continue later.");
+      }
+      if (counts.lastError) {
+        parts.push("Last error: " + counts.lastError);
+      }
+      if (message) {
+        parts.push("Last message: " + message);
+      }
+      return parts.join(" ");
+    }
+
+    function eligibleLabel(counts) {
+      return counts.eligible > 0 || counts.checked === 0 ? String(counts.eligible) : "unknown";
     }
 
     function append(message) {
@@ -1622,8 +1674,12 @@ interface PreviousRunStateSummary {
   send: number;
   doNotSend: number;
   errors: number;
+  canceled: boolean;
+  canResume: boolean;
+  rateLimited: boolean;
   lastLicenseNumber?: string;
   lastMessage?: string;
+  lastError?: string;
   error?: string;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
@@ -1875,7 +1931,7 @@ function resumeRelationshipText(run: PreviousRunSummary): string {
 }
 
 function resumeRunButton(run: PreviousRunSummary): string {
-  if (!run.state?.lastLicenseNumber || run.state.phase === "complete") return "";
+  if (!run.state?.canResume || !run.state.lastLicenseNumber || run.state.phase === "complete") return "";
   return `<button type="button" class="resume-run" data-run-id="${escapeHtml(run.id)}">Resume</button>`;
 }
 
@@ -1884,12 +1940,17 @@ function runStateSummary(state: PreviousRunStateSummary | undefined): string {
 
   const finishedAt = state.completedAt ? `<span>Finished: ${escapeHtml(state.completedAt)}</span>` : "";
   const lastLicense = state.lastLicenseNumber ? `<span>Last license: ${escapeHtml(state.lastLicenseNumber)}</span>` : "";
-  const message = state.error || state.lastMessage;
+  const message = state.error || state.lastError || state.lastMessage;
+  const resumeHint = state.canResume ? `<p class="run-message">This run can be resumed. Click Resume to continue from the last checked license.</p>` : "";
+  const eligible = state.eligible > 0 || state.checked === 0 ? String(state.eligible) : "unknown";
 
   return `
     <div class="run-state">
       <span>Phase: ${escapeHtml(state.phase)}</span>
-      <span>Eligible: ${state.eligible}</span>
+      <span>Canceled: ${state.canceled ? "yes" : "no"}</span>
+      <span>Can resume: ${state.canResume ? "yes" : "no"}</span>
+      ${state.rateLimited ? "<span>Rate limited: yes</span>" : ""}
+      <span>Eligible: ${eligible}</span>
       <span>Checked: ${state.checked}</span>
       <span>Send: ${state.send}</span>
       <span>Do not send: ${state.doNotSend}</span>
@@ -1898,6 +1959,7 @@ function runStateSummary(state: PreviousRunStateSummary | undefined): string {
       ${finishedAt}
     </div>
     ${message ? `<p class="run-message${state.error ? " run-error" : ""}">${escapeHtml(message)}</p>` : ""}
+    ${resumeHint}
   `;
 }
 
