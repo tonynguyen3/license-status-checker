@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
-import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
@@ -8,6 +9,7 @@ import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import type { DurableRunState } from "./run-state.js";
 import { runWashingtonCheck } from "./runner.js";
+import { readTradesmenWorkbook, writeTradesmenWorkbook } from "./spreadsheet.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
 
 loadEnvFile();
@@ -73,6 +75,8 @@ interface EmailPollStatus {
   logPath: string;
 }
 
+type CombinedWorkbookKind = "send" | "doNotSend";
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
@@ -137,6 +141,12 @@ const server = createServer(async (request, response) => {
     const resumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
     if (request.method === "POST" && resumeMatch) {
       await handleResumeRun(resumeMatch[1], request, response);
+      return;
+    }
+
+    const combinedMatch = url.pathname.match(/^\/runs\/([^/]+)\/combined\/(send|doNotSend)$/);
+    if (request.method === "GET" && combinedMatch) {
+      await handleCombinedRunWorkbook(combinedMatch[1], combinedMatch[2] as CombinedWorkbookKind, response);
       return;
     }
 
@@ -497,6 +507,49 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
     "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${basename(path)}"`
   });
   createReadStream(path).pipe(response);
+}
+
+async function handleCombinedRunWorkbook(
+  runId: string,
+  kind: CombinedWorkbookKind,
+  response: ServerResponse
+): Promise<void> {
+  const runSummaries = await listPreviousRuns();
+  const group = groupedRunSummaries(runSummaries).find((candidate) => runIdsInGroup(candidate).includes(runId));
+  if (!group) {
+    sendJson(response, 404, { error: "Run group not found." });
+    return;
+  }
+
+  const runIds = runIdsInGroup(group);
+  const tradesmen = [];
+  for (const linkedRunId of runIds) {
+    const outputPaths = await outputPathsForRun(linkedRunId);
+    if (!outputPaths) continue;
+
+    const path = kind === "send" ? outputPaths.sendPath : outputPaths.doNotSendPath;
+    try {
+      tradesmen.push(...await readTradesmenWorkbook(path));
+    } catch {
+      continue;
+    }
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), "license-status-combined-"));
+  const label = kind === "send" ? "Send" : "DoNotSend";
+  const outputPath = join(tempDir, `Combined-${label}-${group.root.id}.xlsx`);
+
+  try {
+    await writeTradesmenWorkbook(tradesmen, outputPath);
+    const workbook = await readFile(outputPath);
+    response.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="${basename(outputPath)}"`
+    });
+    response.end(workbook);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function handleDeleteRun(runId: string, response: ServerResponse): Promise<void> {
@@ -1470,6 +1523,8 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     .run-group-title { padding:12px 14px; border-bottom:1px solid var(--line); background:var(--panel); display:flex; justify-content:space-between; gap:12px; align-items:center; }
     .run-group-title h2 { margin:0; }
     .run-group-title p { text-align:right; }
+    .run-group-meta { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+    .combined-links { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; font-size:13px; }
     .run { padding:14px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
     .run + .run { border-top:1px solid var(--line); }
     .run.resumed { padding-left:28px; border-left:4px solid var(--gold); }
@@ -1489,7 +1544,7 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
     .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
     .empty { color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:18px; background:#fff; }
-    @media (max-width: 760px) { .run-group-title { display:block; } .run-group-title p { text-align:left; margin-top:4px; } .run { display:block; } .run.resumed { padding-left:14px; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
+    @media (max-width: 760px) { .run-group-title { display:block; } .run-group-title p { text-align:left; margin-top:4px; } .run-group-meta { align-items:flex-start; margin-top:8px; } .combined-links { justify-content:flex-start; } .run { display:block; } .run.resumed { padding-left:14px; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
   </style>
 </head>
 <body>
@@ -1630,12 +1685,30 @@ function runGroupHtml(group: PreviousRunGroup): string {
           <h2>${escapeHtml(group.root.id)}</h2>
           <p>Created ${escapeHtml(group.root.createdAt)}</p>
         </div>
-        <p>${escapeHtml(resumeText)}</p>
+        <div class="run-group-meta">
+          <p>${escapeHtml(resumeText)}</p>
+          ${combinedRunLinks(group)}
+        </div>
       </div>
       ${runHtml(group.root)}
       ${group.resumedRuns.map((run) => runHtml(run, true)).join("")}
     </section>
   `;
+}
+
+function combinedRunLinks(group: PreviousRunGroup): string {
+  if (group.resumedRuns.length === 0) return "";
+
+  return `
+    <div class="combined-links">
+      <a href="/runs/${encodeURIComponent(group.root.id)}/combined/send">Combined Send.xlsx</a>
+      <a href="/runs/${encodeURIComponent(group.root.id)}/combined/doNotSend">Combined DoNotSend.xlsx</a>
+    </div>
+  `;
+}
+
+function runIdsInGroup(group: PreviousRunGroup): string[] {
+  return [group.root, ...group.resumedRuns].map((run) => run.id);
 }
 
 function runHtml(run: PreviousRunSummary, isResumed = false): string {

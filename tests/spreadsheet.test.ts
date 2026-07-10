@@ -7,6 +7,7 @@ import { buildOutputPaths } from "../src/paths.js";
 import {
   asText,
   readEligibleTradesmen,
+  readTradesmenWorkbook,
   readWashingtonSpreadsheet,
   StreamingTradesmenWorkbookWriter
 } from "../src/spreadsheet.js";
@@ -44,6 +45,12 @@ function addHeader(worksheet: ExcelJS.Worksheet): void {
   ]);
 }
 
+function dateDaysFromNow(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+}
+
 describe("asText", () => {
   it("normalizes blank and date cell values", () => {
     expect(asText("  ")).toBeUndefined();
@@ -59,10 +66,10 @@ describe("readWashingtonSpreadsheet", () => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Electricians");
     addHeader(worksheet);
-    worksheet.addRow(["EL", "LIC-1", "Ada", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    worksheet.addRow(["EL", "", "Missing", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    worksheet.addRow(["EL", "LIC-OLD", "Old", "1 Main", "", "Seattle", "WA", "98101", "1/1/2020"]);
-    worksheet.addRow(["EL", "LIC-FAR", "Far", "1 Main", "", "Seattle", "WA", "98101", "1/1/2030"]);
+    worksheet.addRow(["EL", "LIC-1", "Ada", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    worksheet.addRow(["EL", "", "Missing", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    worksheet.addRow(["EL", "LIC-OLD", "Old", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(-1)]);
+    worksheet.addRow(["EL", "LIC-FAR", "Far", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(120)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -72,7 +79,7 @@ describe("readWashingtonSpreadsheet", () => {
       expect.objectContaining({
         licenseNumber: "LIC-1",
         name: "Ada",
-        expirationDate: "7/20/2026"
+        expirationDate: dateDaysFromNow(30)
       })
     ]);
 
@@ -90,8 +97,8 @@ describe("readWashingtonSpreadsheet", () => {
     const roofers = workbook.addWorksheet("Roofers");
     addHeader(electricians);
     addHeader(roofers);
-    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    roofers.addRow(["RF", "RF-1", "Roo", "2 Main", "", "Tacoma", "WA", "98402", "7/20/2026"]);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    roofers.addRow(["RF", "RF-1", "Roo", "2 Main", "", "Tacoma", "WA", "98402", dateDaysFromNow(30)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -114,8 +121,8 @@ describe("readWashingtonSpreadsheet", () => {
     const plumbers = workbook.addWorksheet("Plumbers");
     addHeader(electricians);
     addHeader(plumbers);
-    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    plumbers.addRow(["PL", "PL-1", "Pat", "2 Main", "", "Tacoma", "WA", "98402", "7/20/2026"]);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    plumbers.addRow(["PL", "PL-1", "Pat", "2 Main", "", "Tacoma", "WA", "98402", dateDaysFromNow(30)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -158,9 +165,9 @@ describe("readEligibleTradesmen", () => {
     const workbook = new ExcelJS.Workbook();
     const electricians = workbook.addWorksheet("Electricians");
     addHeader(electricians);
-    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    electricians.addRow(["EL", "EL-OLD", "Old", "1 Main", "", "Seattle", "WA", "98101", "1/1/2020"]);
-    electricians.addRow(["EL", "EL-2", "Elle", "3 Main", "", "Everett", "WA", "98201", "8/1/2026"]);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    electricians.addRow(["EL", "EL-OLD", "Old", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(-1)]);
+    electricians.addRow(["EL", "EL-2", "Elle", "3 Main", "", "Everett", "WA", "98201", dateDaysFromNow(45)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -182,9 +189,9 @@ describe("readEligibleTradesmen", () => {
     const workbook = new ExcelJS.Workbook();
     const electricians = workbook.addWorksheet("Electricians");
     addHeader(electricians);
-    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
-    electricians.addRow(["EL", "EL-2", "Elle", "2 Main", "", "Everett", "WA", "98201", "8/1/2026"]);
-    electricians.addRow(["EL", "EL-3", "Ellis", "3 Main", "", "Tacoma", "WA", "98401", "8/2/2026"]);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
+    electricians.addRow(["EL", "EL-2", "Elle", "2 Main", "", "Everett", "WA", "98201", dateDaysFromNow(45)]);
+    electricians.addRow(["EL", "EL-3", "Ellis", "3 Main", "", "Tacoma", "WA", "98401", dateDaysFromNow(46)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -206,7 +213,7 @@ describe("readEligibleTradesmen", () => {
     const workbook = new ExcelJS.Workbook();
     const electricians = workbook.addWorksheet("Electricians");
     addHeader(electricians);
-    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", dateDaysFromNow(30)]);
     await workbook.xlsx.writeFile(inputPath);
 
     const logger = new TestLogger();
@@ -232,7 +239,7 @@ describe("StreamingTradesmenWorkbookWriter", () => {
       licenseType: "EL",
       licenseNumber: "EL-1",
       name: "Eli",
-      expirationDate: "7/20/2026",
+      expirationDate: dateDaysFromNow(30),
       trade: "Electrician",
       hoursNeeded: 24
     });
@@ -246,6 +253,31 @@ describe("StreamingTradesmenWorkbookWriter", () => {
     expect(worksheet?.getRow(1).getCell(2).value).toBe("License Number");
     expect(worksheet?.getRow(2).getCell(2).value).toBe("EL-1");
     expect(worksheet?.getRow(2).getCell(3).value).toBe("Eli");
+  });
+
+  it("reads rows back from a tradesmen output workbook", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPath = join(dir, "Send.xlsx");
+    const writer = await StreamingTradesmenWorkbookWriter.create(outputPath);
+
+    writer.add({
+      licenseType: "EL",
+      licenseNumber: "EL-1",
+      name: "Eli",
+      expirationDate: dateDaysFromNow(30),
+      trade: "Electrician",
+      hoursNeeded: 24
+    });
+    await writer.commit();
+
+    await expect(readTradesmenWorkbook(outputPath)).resolves.toEqual([
+      expect.objectContaining({
+        licenseNumber: "EL-1",
+        name: "Eli",
+        trade: "Electrician",
+        hoursNeeded: 24
+      })
+    ]);
   });
 
   it("creates a valid workbook when no rows are written", async () => {

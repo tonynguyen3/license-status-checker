@@ -389,6 +389,48 @@ export async function writeTradesmenWorkbook(tradesmen: Tradesman[], path: strin
   await workbook.xlsx.writeFile(path);
 }
 
+export async function readTradesmenWorkbook(path: string): Promise<Tradesman[]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(path);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+
+  const tradesmen: Tradesman[] = [];
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+
+    const licenseNumber = asText(row.getCell(2).value);
+    if (!licenseNumber) return;
+
+    tradesmen.push({
+      licenseType: asText(row.getCell(1).value),
+      licenseNumber,
+      name: asText(row.getCell(3).value),
+      address1: asText(row.getCell(4).value),
+      address2: asText(row.getCell(5).value),
+      city: asText(row.getCell(6).value),
+      state: asText(row.getCell(7).value),
+      zip: asText(row.getCell(8).value),
+      expirationDate: asText(row.getCell(9).value),
+      notSendReason: asText(row.getCell(10).value),
+      trade: asText(row.getCell(11).value),
+      hoursNeeded: asNumber(row.getCell(12).value),
+      hoursCompleted: asNumber(row.getCell(13).value)
+    });
+  });
+
+  return tradesmen;
+}
+
+function asNumber(value: CellValue): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number") return value;
+  const text = asText(value);
+  if (!text) return undefined;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 export class StreamingTradesmenWorkbookWriter {
   private readonly workbook: ExcelJS.stream.xlsx.WorkbookWriter;
   private readonly worksheet: ExcelJS.Worksheet;

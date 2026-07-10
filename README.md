@@ -177,7 +177,9 @@ Files/web-runs/{YYYY-MM-DD-HH-MM-SS}/
 
 If a run is canceled, rate-limited, or fails after at least one license was checked, the Previous Runs page shows a `Resume` button. Resuming creates a new run folder, copies the original `ListToCheck.xlsx`, reuses the stored run options, streams the workbook again, skips eligible rows through the last checked license checkpoint, and continues with the next eligible row.
 
-Resumed runs do not append into the original output files. They write their own output files in their own run folder. The Previous Runs page groups the original run and resumed runs together so the chain is visible, but combined exports are not merged yet.
+Resumed runs do not append into the original output files. They write their own output files in their own run folder. The Previous Runs page groups the original run and resumed runs together so the chain is visible.
+
+For linked run groups, the Previous Runs page also provides combined export links for `Send.xlsx` and `DoNotSend.xlsx`. These combined files are generated on demand from the original run plus its resumed runs, in run order. The combined files are downloads only; they are not saved permanently into the run folders.
 
 ### Email Results
 
