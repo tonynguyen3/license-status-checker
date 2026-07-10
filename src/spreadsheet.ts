@@ -1,10 +1,13 @@
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import ExcelJS from "exceljs";
+import { SaxesParser } from "saxes";
 import { daysUntil } from "./date-utils.js";
 import { Logger } from "./logger.js";
 import type { CourseFrequency, OutputPaths, ProgressReporter, Tradesman } from "./types.js";
 
+const require = createRequire(import.meta.url);
 type CellValue = ExcelJS.CellValue | undefined;
 const SUPPORTED_WORKSHEET_NAMES = ["Plumbers", "Plumber Trainees", "Electricians"] as const;
 const SUPPORTED_WORKSHEET_NAME_SET = new Set(SUPPORTED_WORKSHEET_NAMES.map((name) => normalizeWorksheetName(name)));
@@ -12,6 +15,25 @@ const SUPPORTED_WORKSHEET_NAME_SET = new Set(SUPPORTED_WORKSHEET_NAMES.map((name
 interface ReadSpreadsheetOptions {
   worksheetName?: string;
   onProgress?: ProgressReporter;
+}
+
+interface StreamingWorksheetReader {
+  name: string;
+  [Symbol.asyncIterator](): AsyncGenerator<ExcelJS.Row>;
+}
+
+interface WorkbookStreamMetadata {
+  workbookRels: Array<{ Id: string; Target: string }>;
+  model: {
+    sheets: Array<{ id: number; name: string; rId: string; state?: string }>;
+  };
+}
+
+interface ZipDirectory {
+  files: Array<{
+    path: string;
+    buffer(): Promise<Buffer>;
+  }>;
 }
 
 export function asText(value: CellValue): string | undefined {
@@ -35,17 +57,38 @@ export async function readWashingtonSpreadsheet(
   outputPaths: OutputPaths,
   options: ReadSpreadsheetOptions = {}
 ): Promise<Tradesman[]> {
+  const tradesmen: Tradesman[] = [];
+  for await (const tradesman of readEligibleTradesmen(inputPath, logger, outputPaths, options)) {
+    tradesmen.push(tradesman);
+  }
+
+  return tradesmen;
+}
+
+export async function* readEligibleTradesmen(
+  inputPath: string,
+  logger: Logger,
+  outputPaths: OutputPaths,
+  options: ReadSpreadsheetOptions = {}
+): AsyncGenerator<Tradesman> {
   logger.writeToConsole("The program is now reading the spreadsheet.\n-----");
   options.onProgress?.({ type: "spreadsheet_loading", message: "Loading the input spreadsheet." });
 
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(inputPath);
-  const worksheets = selectWorksheets(workbook, options.worksheetName);
-  const rowTotal = worksheets.reduce((total, worksheet) => total + Math.max(0, worksheet.rowCount - 1), 0);
-  const tradesmen: Tradesman[] = [];
+  validateRequestedWorksheet(options.worksheetName);
+
+  const workbook = new ExcelJS.stream.xlsx.WorkbookReader(inputPath, {
+    worksheets: "emit",
+    sharedStrings: "cache",
+    hyperlinks: "ignore",
+    styles: "ignore",
+    entries: "ignore"
+  });
+  await primeWorkbookReaderMetadata(workbook, inputPath);
+
   let errorCount = 0;
   let rowsRead = 0;
   let eligibleCount = 0;
+  let foundRequestedWorksheet = false;
 
   if (options.worksheetName) {
     logger.writeToConsole(`Only reading worksheet "${options.worksheetName}".`);
@@ -53,36 +96,39 @@ export async function readWashingtonSpreadsheet(
 
   options.onProgress?.({
     type: "spreadsheet_loaded",
-    message: `Loaded ${worksheets.length} worksheet(s) with ${rowTotal} data row(s).`,
-    total: rowTotal
+    message: "Loaded the workbook. Streaming supported worksheet rows now."
   });
 
-  for (const worksheet of worksheets) {
+  for await (const worksheetReader of workbook) {
+    const worksheet = worksheetReader as unknown as StreamingWorksheetReader;
+    if (!shouldReadWorksheet(worksheet.name, options.worksheetName)) continue;
+
+    if (options.worksheetName) {
+      foundRequestedWorksheet = true;
+    }
+
     options.onProgress?.({
       type: "worksheet_started",
-      message: `Reading worksheet "${worksheet.name}" (${Math.max(0, worksheet.rowCount - 1)} data row(s)).`,
-      current: rowsRead,
-      total: rowTotal,
-      remaining: Math.max(0, rowTotal - rowsRead)
+      message: `Reading worksheet "${worksheet.name}".`,
+      current: rowsRead
     });
 
     const worksheetStartEligible = eligibleCount;
     const worksheetStartErrors = errorCount;
 
-    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+    for await (const row of worksheet) {
+      if (row.number === 1) continue;
+
       rowsRead++;
-      if (rowsRead === 1 || rowsRead === rowTotal || rowsRead % 100 === 0) {
+      if (rowsRead === 1 || rowsRead % 100 === 0) {
         options.onProgress?.({
           type: "spreadsheet_row",
-          message: `Read ${rowsRead} of ${rowTotal} spreadsheet row(s). Eligible so far: ${eligibleCount}. Skipped/logged so far: ${errorCount}.`,
-          current: rowsRead,
-          total: rowTotal,
-          remaining: Math.max(0, rowTotal - rowsRead)
+          message: `Read ${rowsRead} spreadsheet row(s). Eligible so far: ${eligibleCount}. Skipped/logged so far: ${errorCount}.`,
+          current: rowsRead
         });
       }
 
-      const row = worksheet.getRow(rowNumber);
-      const rowLocation = `${worksheet.name}!${rowNumber}`;
+      const rowLocation = `${worksheet.name}!${row.number}`;
       if (!row.hasValues) {
         await logger.writeErrorsToLog(`Skipped ${rowLocation}: row has no values.`, outputPaths.exceptionLogPath);
         errorCount++;
@@ -130,7 +176,7 @@ export async function readWashingtonSpreadsheet(
         continue;
       }
 
-      tradesmen.push({
+      yield {
         licenseType: asText(row.getCell(1).value),
         licenseNumber,
         name: asText(row.getCell(3).value),
@@ -140,48 +186,140 @@ export async function readWashingtonSpreadsheet(
         state: asText(row.getCell(7).value),
         zip: asText(row.getCell(8).value),
         expirationDate
-      });
+      };
       eligibleCount++;
     }
 
     options.onProgress?.({
       type: "worksheet_complete",
       message: `Finished worksheet "${worksheet.name}". Eligible: ${eligibleCount - worksheetStartEligible}. Skipped/logged: ${errorCount - worksheetStartErrors}.`,
-      current: rowsRead,
-      total: rowTotal,
-      remaining: Math.max(0, rowTotal - rowsRead)
+      current: rowsRead
     });
   }
 
+  if (options.worksheetName && !foundRequestedWorksheet) {
+    throw new Error(`Worksheet "${options.worksheetName}" was not found. Supported worksheets: ${supportedWorksheetNamesForMessage()}`);
+  }
+
   logger.writeToConsole(
-    `The program has finished reading the spreadsheet.\nThere were ${errorCount} error(s), recorded in the logs.\nIt will now check ${tradesmen.length} license(s).\n-----`
+    `The program has finished reading the spreadsheet.\nThere were ${errorCount} error(s), recorded in the logs.\nIt will now check ${eligibleCount} license(s).\n-----`
   );
   options.onProgress?.({
     type: "spreadsheet_complete",
-    message: `Spreadsheet read complete. ${tradesmen.length} license(s) are eligible for website checks.`,
-    total: tradesmen.length
+    message: `Spreadsheet read complete. ${eligibleCount} license(s) are eligible for website checks.`,
+    current: rowsRead,
+    total: eligibleCount
   });
-
-  return tradesmen;
 }
 
-function selectWorksheets(workbook: ExcelJS.Workbook, worksheetName?: string): ExcelJS.Worksheet[] {
-  if (!worksheetName) {
-    return workbook.worksheets.filter((sheet) => SUPPORTED_WORKSHEET_NAME_SET.has(normalizeWorksheetName(sheet.name)));
-  }
+function validateRequestedWorksheet(worksheetName?: string): void {
+  if (!worksheetName) return;
 
   const normalizedName = normalizeWorksheetName(worksheetName);
   if (!SUPPORTED_WORKSHEET_NAME_SET.has(normalizedName)) {
-    throw new Error(`Worksheet "${worksheetName}" is not supported. Supported worksheets: ${SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ")}`);
+    throw new Error(`Worksheet "${worksheetName}" is not supported. Supported worksheets: ${supportedWorksheetNamesForMessage()}`);
+  }
+}
+
+function shouldReadWorksheet(sheetName: string, worksheetName?: string): boolean {
+  const normalizedSheetName = normalizeWorksheetName(sheetName);
+  if (worksheetName) return normalizedSheetName === normalizeWorksheetName(worksheetName);
+  return SUPPORTED_WORKSHEET_NAME_SET.has(normalizedSheetName);
+}
+
+function supportedWorksheetNamesForMessage(): string {
+  return SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ");
+}
+
+async function primeWorkbookReaderMetadata(workbook: ExcelJS.stream.xlsx.WorkbookReader, inputPath: string): Promise<void> {
+  const metadata = await readWorkbookStreamMetadata(inputPath);
+  const workbookWithMetadata = workbook as unknown as {
+    workbookRels?: WorkbookStreamMetadata["workbookRels"];
+    model?: WorkbookStreamMetadata["model"];
+  };
+  workbookWithMetadata.workbookRels = metadata.workbookRels;
+  workbookWithMetadata.model = metadata.model;
+}
+
+async function readWorkbookStreamMetadata(inputPath: string): Promise<WorkbookStreamMetadata> {
+  const [workbookXml, relationshipsXml] = await Promise.all([
+    readZipEntryText(inputPath, "xl/workbook.xml"),
+    readZipEntryText(inputPath, "xl/_rels/workbook.xml.rels")
+  ]);
+
+  if (!workbookXml || !relationshipsXml) {
+    throw new Error("Input workbook is missing required worksheet metadata.");
   }
 
-  const worksheet = workbook.worksheets.find((sheet) => normalizeWorksheetName(sheet.name) === normalizedName);
+  return {
+    workbookRels: parseWorkbookRelationships(relationshipsXml),
+    model: {
+      sheets: parseWorkbookSheets(workbookXml)
+    }
+  };
+}
 
-  if (!worksheet) {
-    throw new Error(`Worksheet "${worksheetName}" was not found. Supported worksheets: ${SUPPORTED_WORKSHEET_NAMES.map((name) => `"${name}"`).join(", ")}`);
-  }
+async function readZipEntryText(inputPath: string, entryPath: string): Promise<string | undefined> {
+  const unzipper = require("unzipper") as {
+    Open: {
+      file(path: string): Promise<ZipDirectory>;
+    };
+  };
+  const directory = await unzipper.Open.file(inputPath);
+  const entry = directory.files.find((file) => file.path === entryPath);
+  if (!entry) return undefined;
+  return (await entry.buffer()).toString("utf8");
+}
 
-  return [worksheet];
+function parseWorkbookSheets(xml: string): WorkbookStreamMetadata["model"]["sheets"] {
+  const sheets: WorkbookStreamMetadata["model"]["sheets"] = [];
+  const parser = new SaxesParser({ xmlns: false });
+
+  parser.on("opentag", (tag) => {
+    if (tag.name !== "sheet") return;
+
+    const attributes = tag.attributes as Record<string, string>;
+    const sheetId = Number(attributes.sheetId);
+    const name = attributes.name;
+    const rId = attributes["r:id"];
+
+    if (!name || !rId || !Number.isFinite(sheetId)) return;
+
+    sheets.push({
+      id: sheetId,
+      name,
+      rId,
+      state: attributes.state
+    });
+  });
+  parser.write(xml).close();
+
+  return sheets;
+}
+
+function parseWorkbookRelationships(xml: string): WorkbookStreamMetadata["workbookRels"] {
+  const relationships: WorkbookStreamMetadata["workbookRels"] = [];
+  const parser = new SaxesParser({ xmlns: false });
+
+  parser.on("opentag", (tag) => {
+    if (tag.name !== "Relationship") return;
+
+    const attributes = tag.attributes as Record<string, string>;
+    const Id = attributes.Id;
+    const Target = normalizeWorkbookRelationshipTarget(attributes.Target);
+    if (!Id || !Target) return;
+
+    relationships.push({ Id, Target });
+  });
+  parser.write(xml).close();
+
+  return relationships;
+}
+
+function normalizeWorkbookRelationshipTarget(target: string | undefined): string | undefined {
+  return target
+    ?.replace(/^\/?xl\//, "")
+    .replace(/^\//, "");
 }
 
 function normalizeWorksheetName(name: string): string {

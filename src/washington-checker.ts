@@ -11,6 +11,8 @@ interface CheckRunResult {
   canceled: boolean;
 }
 
+type TradesmanSource = Iterable<Tradesman> | AsyncIterable<Tradesman>;
+
 class WashingtonRateLimitError extends Error {
   constructor(message: string) {
     super(message);
@@ -27,15 +29,15 @@ export class WashingtonLicenseChecker {
     private readonly options: CheckerOptions
   ) {}
 
-  async checkLicenses(tradesmen: Tradesman[]): Promise<CheckRunResult> {
-    const limitedTradesmen = this.options.limit ? tradesmen.slice(0, this.options.limit) : tradesmen;
+  async checkLicenses(tradesmen: TradesmanSource): Promise<CheckRunResult> {
+    const total = knownTotal(tradesmen, this.options.limit);
     if (this.options.isCanceled?.()) {
       this.options.onProgress?.({
         type: "checks_canceled",
         message: "Run was stopped before website checks started.",
         current: 0,
-        total: limitedTradesmen.length,
-        remaining: limitedTradesmen.length
+        total,
+        remaining: total
       });
       return {
         send: [],
@@ -45,46 +47,68 @@ export class WashingtonLicenseChecker {
       };
     }
 
-    const browser = await chromium.launch({
-      headless: !this.options.headed,
-      slowMo: this.options.slowMo
-    });
+    let browser: Browser | undefined;
+    let page: Page | undefined;
 
     try {
-      const page = await browser.newPage();
       const results: BucketedResult[] = [];
-      const total = limitedTradesmen.length;
       let sendCount = 0;
       let doNotSendCount = 0;
       let errorCount = 0;
       let canceled = false;
+      let checkedCount = 0;
+      let checksStarted = false;
 
-      this.options.onProgress?.({
-        type: "checks_started",
-        message: `Starting ${total} website check(s).`,
-        current: 0,
-        total,
-        remaining: total
-      });
-
-      for (let index = 0; index < limitedTradesmen.length; index++) {
+      for await (const tradesman of limitedTradesmen(tradesmen, this.options.limit)) {
         if (this.options.isCanceled?.()) {
           canceled = true;
           this.options.onProgress?.({
             type: "checks_canceled",
-            message: `Run stopped after ${index} of ${total} website check(s). Partial output files will be written.`,
-            current: index,
+            message: `Run stopped after ${checkedCount}${total === undefined ? "" : ` of ${total}`} website check(s). Partial output files will be written.`,
+            current: checkedCount,
             total,
-            remaining: total - index
+            remaining: remainingChecks(total, checkedCount)
           });
           break;
         }
 
-        const tradesman = limitedTradesmen[index];
-        const current = index + 1;
+        if (!browser || !page) {
+          browser = await chromium.launch({
+            headless: !this.options.headed,
+            slowMo: this.options.slowMo
+          });
+          page = await browser.newPage();
+          checksStarted = true;
+          this.options.onProgress?.({
+            type: "checks_started",
+            message: total === undefined
+              ? "Starting website checks as eligible spreadsheet rows stream in."
+              : `Starting ${total} website check(s).`,
+            current: 0,
+            total,
+            remaining: total
+          });
+        }
+
+        if (checkedCount > 0) {
+          await this.pauseBetweenChecks();
+          if (this.options.isCanceled?.()) {
+            canceled = true;
+            this.options.onProgress?.({
+              type: "checks_canceled",
+              message: `Run stopped after ${checkedCount}${total === undefined ? "" : ` of ${total}`} website check(s). Partial output files will be written.`,
+              current: checkedCount,
+              total,
+              remaining: remainingChecks(total, checkedCount)
+            });
+            break;
+          }
+        }
+
+        checkedCount++;
 
         try {
-          const result = await this.checkSingleLicense(page, tradesman);
+          const result = await this.checkLicense(page, tradesman);
           results.push(result);
           if (result.bucket === "send") {
             sendCount++;
@@ -106,35 +130,35 @@ export class WashingtonLicenseChecker {
               type: "rate_limited",
               message:
                 "Washington site returned a rate-limit response. The run stopped before checking more licenses.",
-              current,
+              current: checkedCount,
               total,
-              remaining: total - current
+              remaining: remainingChecks(total, checkedCount)
             });
             break;
           }
         }
 
-        if (current === total || current % 50 === 0) {
+        if (checkedCount % 50 === 0 || checkedCount === total) {
           this.options.onProgress?.({
             type: "checks_progress",
-            message: `Checked ${current} of ${total} license(s). Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
-            current,
+            message: `Checked ${checkedCount}${total === undefined ? "" : ` of ${total}`} license(s). Send: ${sendCount}. DoNotSend: ${doNotSendCount}. Errors: ${errorCount}.`,
+            current: checkedCount,
             total,
-            remaining: total - current
+            remaining: remainingChecks(total, checkedCount)
           });
-        }
-
-        if (current < total && !canceled) {
-          await this.pauseBetweenChecks();
         }
       }
 
       this.options.onProgress?.({
         type: canceled ? "checks_canceled" : "checks_complete",
-        message: canceled ? "Website checks stopped by request." : `Finished ${total} website check(s).`,
-        current: canceled ? sendCount + doNotSendCount + errorCount : total,
+        message: canceled
+          ? "Website checks stopped by request."
+          : checksStarted
+            ? `Finished ${checkedCount}${total === undefined ? "" : ` of ${total}`} website check(s).`
+            : "There were no eligible licenses to check.",
+        current: checkedCount,
         total,
-        remaining: canceled ? total - sendCount - doNotSendCount - errorCount : 0
+        remaining: canceled ? remainingChecks(total, checkedCount) : 0
       });
 
       return {
@@ -144,11 +168,13 @@ export class WashingtonLicenseChecker {
         canceled
       };
     } finally {
-      await closeBrowser(browser);
+      if (browser) {
+        await closeBrowser(browser);
+      }
     }
   }
 
-  private async checkSingleLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
+  async checkLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
     const response = await page.goto(
       `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
       { waitUntil: "load" }
@@ -339,6 +365,30 @@ async function closeBrowser(browser: Browser): Promise<void> {
   } catch {
     // The run is already finished; browser cleanup failures should not hide output.
   }
+}
+
+function knownTotal(tradesmen: TradesmanSource, limit?: number): number | undefined {
+  if (!Array.isArray(tradesmen)) return limit;
+  return limit === undefined ? tradesmen.length : Math.min(tradesmen.length, limit);
+}
+
+async function* limitedTradesmen(tradesmen: TradesmanSource, limit?: number): AsyncGenerator<Tradesman> {
+  let count = 0;
+  for await (const tradesman of toAsyncIterable(tradesmen)) {
+    if (limit !== undefined && count >= limit) break;
+    count++;
+    yield tradesman;
+  }
+}
+
+async function* toAsyncIterable(tradesmen: TradesmanSource): AsyncGenerator<Tradesman> {
+  for await (const tradesman of tradesmen) {
+    yield tradesman;
+  }
+}
+
+function remainingChecks(total: number | undefined, current: number): number | undefined {
+  return total === undefined ? undefined : Math.max(0, total - current);
 }
 
 function sleep(ms: number): Promise<void> {

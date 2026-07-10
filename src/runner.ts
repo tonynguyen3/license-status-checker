@@ -2,7 +2,7 @@ import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
-import { readWashingtonSpreadsheet, writeCourseFrequencies, writeTradesmenWorkbook } from "./spreadsheet.js";
+import { readEligibleTradesmen, writeCourseFrequencies, writeTradesmenWorkbook } from "./spreadsheet.js";
 import type { OutputPaths, ProgressReporter } from "./types.js";
 import { WashingtonLicenseChecker } from "./washington-checker.js";
 
@@ -36,10 +36,6 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
 
   logger.logStart();
 
-  const tradesmen = await readWashingtonSpreadsheet(options.input, logger, outputPaths, {
-    worksheetName: options.worksheet,
-    onProgress: options.onProgress
-  });
   const checker = new WashingtonLicenseChecker(logger, outputPaths, {
     headed: options.headed,
     slowMo: options.slowMo,
@@ -49,6 +45,10 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
     isCanceled: options.isCanceled
   });
 
+  const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
+    worksheetName: options.worksheet,
+    onProgress: options.onProgress
+  });
   const result = await checker.checkLicenses(tradesmen);
 
   await writeTradesmenWorkbook(result.send, outputPaths.sendPath);

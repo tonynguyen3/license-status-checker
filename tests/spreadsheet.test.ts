@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import { buildOutputPaths } from "../src/paths.js";
-import { asText, readWashingtonSpreadsheet } from "../src/spreadsheet.js";
+import { asText, readEligibleTradesmen, readWashingtonSpreadsheet } from "../src/spreadsheet.js";
 
 class TestLogger {
   readonly consoleMessages: string[] = [];
@@ -25,6 +25,20 @@ class TestLogger {
   }
 }
 
+function addHeader(worksheet: ExcelJS.Worksheet): void {
+  worksheet.addRow([
+    "License Type",
+    "License Number",
+    "Name",
+    "Address1",
+    "Address2",
+    "City",
+    "State",
+    "Zip",
+    "ExpirationDate"
+  ]);
+}
+
 describe("asText", () => {
   it("normalizes blank and date cell values", () => {
     expect(asText("  ")).toBeUndefined();
@@ -33,20 +47,6 @@ describe("asText", () => {
 });
 
 describe("readWashingtonSpreadsheet", () => {
-  function addHeader(worksheet: ExcelJS.Worksheet): void {
-    worksheet.addRow([
-      "License Type",
-      "License Number",
-      "Name",
-      "Address1",
-      "Address2",
-      "City",
-      "State",
-      "Zip",
-      "ExpirationDate"
-    ]);
-  }
-
   it("keeps eligible rows and logs skipped rows with worksheet locations", async () => {
     const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
     const inputPath = join(dir, "ListToCheck.xlsx");
@@ -142,5 +142,31 @@ describe("readWashingtonSpreadsheet", () => {
         worksheetName: "Roofers"
       })
     ).rejects.toThrow('Worksheet "Roofers" is not supported. Supported worksheets: "Plumbers", "Plumber Trainees", "Electricians"');
+  });
+});
+
+describe("readEligibleTradesmen", () => {
+  it("streams eligible rows without requiring callers to hold the full workbook result", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const inputPath = join(dir, "ListToCheck.xlsx");
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const workbook = new ExcelJS.Workbook();
+    const electricians = workbook.addWorksheet("Electricians");
+    addHeader(electricians);
+    electricians.addRow(["EL", "EL-1", "Eli", "1 Main", "", "Seattle", "WA", "98101", "7/20/2026"]);
+    electricians.addRow(["EL", "EL-OLD", "Old", "1 Main", "", "Seattle", "WA", "98101", "1/1/2020"]);
+    electricians.addRow(["EL", "EL-2", "Elle", "3 Main", "", "Everett", "WA", "98201", "8/1/2026"]);
+    await workbook.xlsx.writeFile(inputPath);
+
+    const logger = new TestLogger();
+    const streamed = [];
+
+    for await (const tradesman of readEligibleTradesmen(inputPath, logger, outputPaths)) {
+      streamed.push(tradesman);
+    }
+
+    expect(streamed.map((tradesman) => tradesman.licenseNumber)).toEqual(["EL-1", "EL-2"]);
+    await expect(readFile(outputPaths.expiredLogPath, "utf8")).resolves.toContain("Skipped Electricians!3 (EL-OLD)");
+    expect(logger.consoleMessages.at(-1)).toContain("It will now check 2 license(s).");
   });
 });
