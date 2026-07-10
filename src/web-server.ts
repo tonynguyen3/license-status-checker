@@ -738,7 +738,9 @@ async function readRunStateSummary(path: string): Promise<PreviousRunStateSummar
     errors: state.counts.errors,
     lastLicenseNumber: state.checkpoint?.licenseNumber,
     lastMessage: state.lastMessage,
-    error: state.error
+    error: state.error,
+    resumeAfterLicenseNumber: state.runOptions?.resumeAfterLicenseNumber,
+    resumedFromRunId: state.runOptions?.resumedFromRunId
   };
 }
 
@@ -1440,31 +1442,12 @@ interface PreviousRunStateSummary {
   lastLicenseNumber?: string;
   lastMessage?: string;
   error?: string;
+  resumeAfterLicenseNumber?: string;
+  resumedFromRunId?: string;
 }
 
 function runsHtml(runSummaries: PreviousRunSummary[]): string {
-  const rows = runSummaries.map((run) => `
-    <section class="run" data-run="${escapeHtml(run.id)}">
-      <div class="run-details">
-        <h2>${escapeHtml(run.id)}</h2>
-        <p>Created ${escapeHtml(run.createdAt)}</p>
-        ${runStateSummary(run.state)}
-      </div>
-      <div class="run-actions">
-        <div class="links">
-          ${runFileLink(run.files.send)}
-          ${runFileLink(run.files.doNotSend)}
-          ${runFileLink(run.files.coursesAlreadyTaken)}
-          ${runFileLink(run.files.expired)}
-          ${runFileLink(run.files.greaterThan90)}
-          ${runFileLink(run.files.exception)}
-          ${runFileLink(run.files.runState)}
-        </div>
-        ${resumeRunButton(run)}
-        <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
-      </div>
-    </section>
-  `).join("");
+  const rows = groupedRunSummaries(runSummaries).map(runGroupHtml).join("");
 
   return `<!doctype html>
 <html lang="en">
@@ -1483,9 +1466,16 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
     .brand { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
-    .run { border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
+    .run-group { border:1px solid var(--line); border-radius:6px; margin-bottom:14px; background:#fff; overflow:hidden; }
+    .run-group-title { padding:12px 14px; border-bottom:1px solid var(--line); background:var(--panel); display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .run-group-title h2 { margin:0; }
+    .run-group-title p { text-align:right; }
+    .run { padding:14px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
+    .run + .run { border-top:1px solid var(--line); }
+    .run.resumed { padding-left:28px; border-left:4px solid var(--gold); }
     .run-details { min-width:260px; }
     h2 { font-size:16px; margin:0 0 4px; }
+    h3 { font-size:15px; margin:0 0 4px; }
     p { margin:0; color:var(--muted); font-size:13px; }
     .run-state { margin-top:10px; display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; }
     .run-state span { border:1px solid var(--line); border-radius:999px; padding:4px 8px; background:var(--panel); }
@@ -1499,7 +1489,7 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
     .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
     .empty { color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:18px; background:#fff; }
-    @media (max-width: 760px) { .run { display:block; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
+    @media (max-width: 760px) { .run-group-title { display:block; } .run-group-title p { text-align:left; margin-top:4px; } .run { display:block; } .run.resumed { padding-left:14px; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
   </style>
 </head>
 <body>
@@ -1554,8 +1544,12 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
             throw new Error(result.error || "Could not delete run.");
           }
 
+          const group = button.closest(".run-group");
           button.closest(".run")?.remove();
-          if (!document.querySelector(".run")) {
+          if (group && !group.querySelector(".run")) {
+            group.remove();
+          }
+          if (!document.querySelector(".run-group")) {
             document.querySelector("main").innerHTML = '<div class="empty">No completed runs found yet.</div>';
           }
         } catch (error) {
@@ -1568,6 +1562,113 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
   </script>
 </body>
 </html>`;
+}
+
+interface PreviousRunGroup {
+  root: PreviousRunSummary;
+  resumedRuns: PreviousRunSummary[];
+}
+
+function groupedRunSummaries(runSummaries: PreviousRunSummary[]): PreviousRunGroup[] {
+  const byId = new Map(runSummaries.map((run) => [run.id, run]));
+  const resumedRunsByRoot = new Map<string, PreviousRunSummary[]>();
+  const rootRuns = new Map<string, PreviousRunSummary>();
+
+  for (const run of runSummaries) {
+    const root = rootRunFor(run, byId);
+    rootRuns.set(root.id, root);
+
+    if (run.id !== root.id) {
+      const resumedRuns = resumedRunsByRoot.get(root.id) ?? [];
+      resumedRuns.push(run);
+      resumedRunsByRoot.set(root.id, resumedRuns);
+    }
+  }
+
+  return [...rootRuns.values()]
+    .map((run) => ({
+      root: run,
+      resumedRuns: (resumedRunsByRoot.get(run.id) ?? []).sort(compareRunAscending)
+    }))
+    .sort((a, b) => compareRunDescending(latestRunInGroup(a), latestRunInGroup(b)));
+}
+
+function rootRunFor(run: PreviousRunSummary, byId: Map<string, PreviousRunSummary>): PreviousRunSummary {
+  let current = run;
+  const seen = new Set<string>();
+
+  while (current.state?.resumedFromRunId && !seen.has(current.id)) {
+    seen.add(current.id);
+    const parent = byId.get(current.state.resumedFromRunId);
+    if (!parent) break;
+    current = parent;
+  }
+
+  return current;
+}
+
+function latestRunInGroup(group: PreviousRunGroup): PreviousRunSummary {
+  return [group.root, ...group.resumedRuns].sort(compareRunDescending)[0];
+}
+
+function compareRunDescending(a: PreviousRunSummary, b: PreviousRunSummary): number {
+  return b.id.localeCompare(a.id);
+}
+
+function compareRunAscending(a: PreviousRunSummary, b: PreviousRunSummary): number {
+  return a.id.localeCompare(b.id);
+}
+
+function runGroupHtml(group: PreviousRunGroup): string {
+  const totalRuns = 1 + group.resumedRuns.length;
+  const resumeText = totalRuns === 1 ? "Single run" : `${totalRuns} linked run(s)`;
+
+  return `
+    <section class="run-group">
+      <div class="run-group-title">
+        <div>
+          <h2>${escapeHtml(group.root.id)}</h2>
+          <p>Created ${escapeHtml(group.root.createdAt)}</p>
+        </div>
+        <p>${escapeHtml(resumeText)}</p>
+      </div>
+      ${runHtml(group.root)}
+      ${group.resumedRuns.map((run) => runHtml(run, true)).join("")}
+    </section>
+  `;
+}
+
+function runHtml(run: PreviousRunSummary, isResumed = false): string {
+  const title = isResumed ? `Resumed run ${run.id}` : run.id;
+
+  return `
+    <section class="run${isResumed ? " resumed" : ""}" data-run="${escapeHtml(run.id)}">
+      <div class="run-details">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${isResumed ? resumeRelationshipText(run) : `Created ${escapeHtml(run.createdAt)}`}</p>
+        ${runStateSummary(run.state)}
+      </div>
+      <div class="run-actions">
+        <div class="links">
+          ${runFileLink(run.files.send)}
+          ${runFileLink(run.files.doNotSend)}
+          ${runFileLink(run.files.coursesAlreadyTaken)}
+          ${runFileLink(run.files.expired)}
+          ${runFileLink(run.files.greaterThan90)}
+          ${runFileLink(run.files.exception)}
+          ${runFileLink(run.files.runState)}
+        </div>
+        ${resumeRunButton(run)}
+        <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
+      </div>
+    </section>
+  `;
+}
+
+function resumeRelationshipText(run: PreviousRunSummary): string {
+  const parent = run.state?.resumedFromRunId ? `Resumed from ${run.state.resumedFromRunId}` : `Created ${run.createdAt}`;
+  const checkpoint = run.state?.resumeAfterLicenseNumber ? ` after ${run.state.resumeAfterLicenseNumber}` : "";
+  return escapeHtml(`${parent}${checkpoint}`);
 }
 
 function resumeRunButton(run: PreviousRunSummary): string {
