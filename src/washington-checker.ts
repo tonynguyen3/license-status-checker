@@ -52,6 +52,7 @@ export class WashingtonLicenseChecker {
 
     try {
       const results: BucketedResult[] = [];
+      const shouldCollectResults = this.options.onResult === undefined;
       let sendCount = 0;
       let doNotSendCount = 0;
       let errorCount = 0;
@@ -109,7 +110,10 @@ export class WashingtonLicenseChecker {
 
         try {
           const result = await this.checkLicense(page, tradesman);
-          results.push(result);
+          if (shouldCollectResults) {
+            results.push(result);
+          }
+          await this.options.onResult?.(result);
           if (result.bucket === "send") {
             sendCount++;
           } else {

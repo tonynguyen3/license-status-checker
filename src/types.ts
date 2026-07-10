@@ -33,6 +33,7 @@ export interface CheckerOptions {
   checkDelayMs: number;
   limit?: number;
   onProgress?: ProgressReporter;
+  onResult?: (result: BucketedResult) => void | Promise<void>;
   isCanceled?: () => boolean;
 }
 

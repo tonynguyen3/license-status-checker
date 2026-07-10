@@ -327,7 +327,11 @@ function normalizeWorksheetName(name: string): string {
 }
 
 function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number | undefined>[] {
-  return tradesmen.map((tradesman) => ({
+  return tradesmen.map(tradesmanRow);
+}
+
+function tradesmanRow(tradesman: Tradesman): Record<string, string | number | undefined> {
+  return {
     "License Type": tradesman.licenseType,
     "License Number": tradesman.licenseNumber,
     Name: tradesman.name,
@@ -341,21 +345,62 @@ function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number |
     Trade: tradesman.trade,
     HoursNeeded: tradesman.hoursNeeded,
     HoursCompleted: tradesman.hoursCompleted
-  }));
+  };
 }
+
+const TRADESMAN_COLUMNS = Object.keys(tradesmanRow(emptyTradesman())).map((key) => ({
+  header: key,
+  key,
+  width: Math.max(14, key.length + 2)
+}));
 
 export async function writeTradesmenWorkbook(tradesmen: Tradesman[], path: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet("mySheet");
   const rows = tradesmanRows(tradesmen);
-  worksheet.columns = Object.keys(rows[0] ?? tradesmanRows([emptyTradesman()])[0]).map((key) => ({
-    header: key,
-    key,
-    width: Math.max(14, key.length + 2)
-  }));
+  worksheet.columns = TRADESMAN_COLUMNS;
   worksheet.addRows(rows);
   await workbook.xlsx.writeFile(path);
+}
+
+export class StreamingTradesmenWorkbookWriter {
+  private readonly workbook: ExcelJS.stream.xlsx.WorkbookWriter;
+  private readonly worksheet: ExcelJS.Worksheet;
+  private committed = false;
+  count = 0;
+
+  private constructor(path: string) {
+    this.workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      filename: path,
+      useSharedStrings: false,
+      useStyles: false
+    });
+    this.worksheet = this.workbook.addWorksheet("mySheet");
+    this.worksheet.columns = TRADESMAN_COLUMNS;
+    this.worksheet.getRow(1).commit();
+  }
+
+  static async create(path: string): Promise<StreamingTradesmenWorkbookWriter> {
+    await mkdir(dirname(path), { recursive: true });
+    return new StreamingTradesmenWorkbookWriter(path);
+  }
+
+  add(tradesman: Tradesman): void {
+    if (this.committed) {
+      throw new Error("Cannot write to a committed workbook.");
+    }
+
+    this.worksheet.addRow(tradesmanRow(tradesman)).commit();
+    this.count++;
+  }
+
+  async commit(): Promise<void> {
+    if (this.committed) return;
+    this.committed = true;
+    this.worksheet.commit();
+    await this.workbook.commit();
+  }
 }
 
 export async function writeCourseFrequencies(courses: CourseFrequency[], path: string): Promise<void> {

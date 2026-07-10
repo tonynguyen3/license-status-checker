@@ -2,7 +2,7 @@ import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
-import { readEligibleTradesmen, writeCourseFrequencies, writeTradesmenWorkbook } from "./spreadsheet.js";
+import { readEligibleTradesmen, StreamingTradesmenWorkbookWriter, writeCourseFrequencies } from "./spreadsheet.js";
 import type { OutputPaths, ProgressReporter } from "./types.js";
 import { WashingtonLicenseChecker } from "./washington-checker.js";
 
@@ -36,28 +36,48 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
 
   logger.logStart();
 
-  const checker = new WashingtonLicenseChecker(logger, outputPaths, {
-    headed: options.headed,
-    slowMo: options.slowMo,
-    checkDelayMs: options.checkDelayMs ?? 3000,
-    limit: options.limit,
-    onProgress: options.onProgress,
-    isCanceled: options.isCanceled
-  });
+  const sendWriter = await StreamingTradesmenWorkbookWriter.create(outputPaths.sendPath);
+  const doNotSendWriter = await StreamingTradesmenWorkbookWriter.create(outputPaths.doNotSendPath);
 
-  const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
-    worksheetName: options.worksheet,
-    onProgress: options.onProgress
-  });
-  const result = await checker.checkLicenses(tradesmen);
+  let result: Awaited<ReturnType<WashingtonLicenseChecker["checkLicenses"]>> | undefined;
+  try {
+    const checker = new WashingtonLicenseChecker(logger, outputPaths, {
+      headed: options.headed,
+      slowMo: options.slowMo,
+      checkDelayMs: options.checkDelayMs ?? 3000,
+      limit: options.limit,
+      onProgress: options.onProgress,
+      onResult: (checkedResult) => {
+        if (checkedResult.bucket === "send") {
+          sendWriter.add(checkedResult.tradesman);
+        } else {
+          doNotSendWriter.add(checkedResult.tradesman);
+        }
+      },
+      isCanceled: options.isCanceled
+    });
 
-  await writeTradesmenWorkbook(result.send, outputPaths.sendPath);
-  await writeTradesmenWorkbook(result.doNotSend, outputPaths.doNotSendPath);
+    const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
+      worksheetName: options.worksheet,
+      onProgress: options.onProgress
+    });
+    result = await checker.checkLicenses(tradesmen);
+  } finally {
+    await Promise.all([
+      sendWriter.commit(),
+      doNotSendWriter.commit(),
+      ensureLogFiles(outputPaths)
+    ]);
+  }
+
+  if (!result) {
+    throw new Error("Washington check did not return a result.");
+  }
+
   await writeCourseFrequencies(result.courseFrequencies, outputPaths.coursesAlreadyTakenPath);
-  await ensureLogFiles(outputPaths);
 
-  const sendMessage = `Wrote ${result.send.length} row(s) to ${outputPaths.sendPath}`;
-  const doNotSendMessage = `Wrote ${result.doNotSend.length} row(s) to ${outputPaths.doNotSendPath}`;
+  const sendMessage = `Wrote ${sendWriter.count} row(s) to ${outputPaths.sendPath}`;
+  const doNotSendMessage = `Wrote ${doNotSendWriter.count} row(s) to ${outputPaths.doNotSendPath}`;
   const courseMessage = `Wrote ${result.courseFrequencies.length} course frequency row(s) to ${outputPaths.coursesAlreadyTakenPath}`;
   console.log(sendMessage);
   console.log(doNotSendMessage);
@@ -73,8 +93,8 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   logger.logEnd();
 
   return {
-    sendCount: result.send.length,
-    doNotSendCount: result.doNotSend.length,
+    sendCount: sendWriter.count,
+    doNotSendCount: doNotSendWriter.count,
     courseFrequencyCount: result.courseFrequencies.length,
     outputPaths,
     canceled: result.canceled

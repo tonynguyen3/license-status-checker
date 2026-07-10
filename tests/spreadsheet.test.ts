@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
 import { buildOutputPaths } from "../src/paths.js";
-import { asText, readEligibleTradesmen, readWashingtonSpreadsheet } from "../src/spreadsheet.js";
+import {
+  asText,
+  readEligibleTradesmen,
+  readWashingtonSpreadsheet,
+  StreamingTradesmenWorkbookWriter
+} from "../src/spreadsheet.js";
 
 class TestLogger {
   readonly consoleMessages: string[] = [];
@@ -168,5 +173,48 @@ describe("readEligibleTradesmen", () => {
     expect(streamed.map((tradesman) => tradesman.licenseNumber)).toEqual(["EL-1", "EL-2"]);
     await expect(readFile(outputPaths.expiredLogPath, "utf8")).resolves.toContain("Skipped Electricians!3 (EL-OLD)");
     expect(logger.consoleMessages.at(-1)).toContain("It will now check 2 license(s).");
+  });
+});
+
+describe("StreamingTradesmenWorkbookWriter", () => {
+  it("writes rows incrementally to an xlsx workbook", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPath = join(dir, "Send.xlsx");
+    const writer = await StreamingTradesmenWorkbookWriter.create(outputPath);
+
+    writer.add({
+      licenseType: "EL",
+      licenseNumber: "EL-1",
+      name: "Eli",
+      expirationDate: "7/20/2026",
+      trade: "Electrician",
+      hoursNeeded: 24
+    });
+    await writer.commit();
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(outputPath);
+    const worksheet = workbook.getWorksheet("mySheet");
+
+    expect(writer.count).toBe(1);
+    expect(worksheet?.getRow(1).getCell(2).value).toBe("License Number");
+    expect(worksheet?.getRow(2).getCell(2).value).toBe("EL-1");
+    expect(worksheet?.getRow(2).getCell(3).value).toBe("Eli");
+  });
+
+  it("creates a valid workbook when no rows are written", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPath = join(dir, "DoNotSend.xlsx");
+    const writer = await StreamingTradesmenWorkbookWriter.create(outputPath);
+
+    await writer.commit();
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(outputPath);
+    const worksheet = workbook.getWorksheet("mySheet");
+
+    expect(writer.count).toBe(0);
+    expect(worksheet?.getRow(1).getCell(2).value).toBe("License Number");
+    expect(worksheet?.rowCount).toBe(1);
   });
 });
