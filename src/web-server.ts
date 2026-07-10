@@ -9,7 +9,7 @@ import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { buildOutputPaths } from "./paths.js";
 import type { DurableRunState } from "./run-state.js";
-import { runWashingtonCheck } from "./runner.js";
+import { regenerateReportsFromStore, runWashingtonCheck } from "./runner.js";
 import { readTradesmenWorkbook, writeTradesmenWorkbook } from "./spreadsheet.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
 
@@ -53,6 +53,7 @@ interface RunStartOptions {
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
+  resumeSourceOutDir?: string;
 }
 
 interface EmailPollConfig {
@@ -147,6 +148,12 @@ const server = createServer(async (request, response) => {
     const resumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
     if (request.method === "POST" && resumeMatch) {
       await handleResumeRun(resumeMatch[1], request, response);
+      return;
+    }
+
+    const regenerateMatch = url.pathname.match(/^\/runs\/([^/]+)\/regenerate-reports$/);
+    if (request.method === "POST" && regenerateMatch) {
+      await handleRegenerateReports(regenerateMatch[1], response);
       return;
     }
 
@@ -323,7 +330,8 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
     checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 1500,
     limit: sourceState.runOptions?.limit,
     resumeAfterLicenseNumber,
-    resumedFromRunId: sourceRunId
+    resumedFromRunId: sourceRunId,
+    resumeSourceOutDir: dirname(sourceOutputPaths.runStatePath)
   }, requestBaseUrl(request));
 
   sendJson(response, 200, { runId: run.id, resumedFromRunId: sourceRunId });
@@ -355,6 +363,7 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
     limit: options.limit,
     resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
     resumedFromRunId: options.resumedFromRunId,
+    resumeSourceOutDir: options.resumeSourceOutDir,
     onProgress: (update) => emit(run, update.files ? { ...update, files: fileLinks(run.id, outputPaths) } : update),
     isCanceled: () => run.cancelRequested
   })
@@ -564,6 +573,39 @@ async function handleCombinedRunWorkbook(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+async function handleRegenerateReports(runId: string, response: ServerResponse): Promise<void> {
+  const activeRun = runs.get(runId);
+  if (activeRun?.status === "running") {
+    sendJson(response, 409, { error: "Cannot regenerate reports while the run is still running." });
+    return;
+  }
+
+  const outputPaths = await outputPathsForRun(runId);
+  if (!outputPaths) {
+    sendJson(response, 404, { error: "Run output is not available." });
+    return;
+  }
+
+  try {
+    const lookupStat = await stat(outputPaths.lookupResultsPath);
+    if (!lookupStat.isFile()) {
+      sendJson(response, 404, { error: "This run does not have durable lookup results to regenerate reports from." });
+      return;
+    }
+  } catch {
+    sendJson(response, 404, { error: "This run does not have durable lookup results to regenerate reports from." });
+    return;
+  }
+
+  const result = await regenerateReportsFromStore(outputPaths);
+  sendJson(response, 200, {
+    regenerated: true,
+    runId,
+    ...result,
+    files: fileLinks(runId, outputPaths)
+  });
 }
 
 async function handleDeleteRun(runId: string, response: ServerResponse): Promise<void> {
@@ -1199,6 +1241,7 @@ function pageHtml(): string {
     .stage::before { content:""; position:absolute; top:0; left:0; right:0; height:4px; background:#d9e1dd; border-radius:6px 6px 0 0; }
     .stage strong { display:block; font-size:13px; margin:0 0 4px; color:var(--ink); }
     .stage span { display:block; color:var(--muted); font-size:12px; line-height:1.35; overflow-wrap:anywhere; }
+    .stage small { display:block; margin-top:8px; color:var(--ink); font-size:12px; font-weight:700; line-height:1.35; overflow-wrap:anywhere; }
     .stage.pending { opacity:.72; }
     .stage.active { border-color:var(--gold); box-shadow:0 0 0 2px rgba(246,190,0,.18); }
     .stage.active::before { background:var(--gold); }
@@ -1282,9 +1325,9 @@ function pageHtml(): string {
       <div class="progress"><div class="bar" id="bar"></div></div>
       <div class="meta" id="progressMeta">No run started.</div>
       <div class="stage-flow" aria-label="Run stages">
-        <div class="stage pending" id="stageImport"><strong>Import</strong><span>Waiting for workbook.</span></div>
-        <div class="stage pending" id="stageLookup"><strong>Website Lookup</strong><span>Waiting for queued work.</span></div>
-        <div class="stage pending" id="stageReports"><strong>Reports</strong><span>Waiting for lookup results.</span></div>
+        <div class="stage pending" id="stageImport"><strong>Import</strong><span>Waiting for workbook.</span><small>Rows 0 · Queued 0</small></div>
+        <div class="stage pending" id="stageLookup"><strong>Website Lookup</strong><span>Waiting for queued work.</span><small>Checked 0 · Remaining 0 · Errors 0</small></div>
+        <div class="stage pending" id="stageReports"><strong>Reports</strong><span>Waiting for lookup results.</span><small>Results 0 · Send 0 · Do-not-send 0</small></div>
       </div>
       <div class="toolbar">
         <h2>Progress</h2>
@@ -1297,6 +1340,17 @@ function pageHtml(): string {
   </main>
   <script>
     const state = { uploadId: null, eventSource: null, isRunning: false, currentRunId: null, stopRequested: false };
+    const stageMetrics = {
+      importRows: 0,
+      queued: 0,
+      checked: 0,
+      remaining: 0,
+      send: 0,
+      doNotSend: 0,
+      errors: 0,
+      lookupResults: 0,
+      courses: 0
+    };
     const maxFeedLines = 500;
     const fileInput = document.getElementById("file");
     const uploadButton = document.getElementById("upload");
@@ -1623,12 +1677,14 @@ function pageHtml(): string {
     }
 
     function resetStages() {
+      resetStageMetrics();
       setStage(stageImport, "pending", "Import", "Waiting for workbook.");
       setStage(stageLookup, "pending", "Website Lookup", "Waiting for queued work.");
       setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
     }
 
     function updateStageFlow(update) {
+      updateStageMetrics(update);
       if (["import_started", "spreadsheet_loading", "worksheet_started", "spreadsheet_row"].includes(update.type)) {
         setStage(stageImport, "active", "Import", update.message);
         setStage(stageLookup, "pending", "Website Lookup", "Waiting for queued work.");
@@ -1663,6 +1719,14 @@ function pageHtml(): string {
 
     function renderStageSnapshot(counts) {
       const phase = counts.phase || "";
+      stageMetrics.importRows = counts.eligible;
+      stageMetrics.queued = counts.eligible;
+      stageMetrics.checked = counts.checked;
+      stageMetrics.remaining = Math.max(0, counts.eligible - counts.checked);
+      stageMetrics.send = counts.send;
+      stageMetrics.doNotSend = counts.doNotSend;
+      stageMetrics.errors = counts.errors;
+      stageMetrics.lookupResults = counts.send + counts.doNotSend;
       if (phase === "complete") {
         setStage(stageImport, "done", "Import", "Queued work is ready.");
         setStage(stageLookup, "done", "Website Lookup", "Lookup results are saved.");
@@ -1696,6 +1760,56 @@ function pageHtml(): string {
       element.className = "stage " + stateName;
       element.querySelector("strong").textContent = title;
       element.querySelector("span").textContent = detail || "";
+      element.querySelector("small").textContent = metricsForStage(element);
+    }
+
+    function resetStageMetrics() {
+      stageMetrics.importRows = 0;
+      stageMetrics.queued = 0;
+      stageMetrics.checked = 0;
+      stageMetrics.remaining = 0;
+      stageMetrics.send = 0;
+      stageMetrics.doNotSend = 0;
+      stageMetrics.errors = 0;
+      stageMetrics.lookupResults = 0;
+      stageMetrics.courses = 0;
+    }
+
+    function updateStageMetrics(update) {
+      if (update.type === "spreadsheet_row") {
+        stageMetrics.importRows = update.current || stageMetrics.importRows;
+      }
+      if (update.type === "spreadsheet_complete" || update.type === "import_complete") {
+        stageMetrics.importRows = Math.max(stageMetrics.importRows, update.current || 0);
+        stageMetrics.queued = update.queuedCount || update.total || update.current || stageMetrics.queued;
+        stageMetrics.remaining = stageMetrics.queued;
+      }
+      if (update.type === "lookup_started" || update.type === "checks_started") {
+        stageMetrics.queued = update.total || stageMetrics.queued;
+        stageMetrics.remaining = update.remaining ?? stageMetrics.queued;
+      }
+      if (["checks_progress", "website_check_error", "rate_limited", "checks_canceled", "checks_complete"].includes(update.type)) {
+        stageMetrics.checked = update.current ?? stageMetrics.checked;
+        stageMetrics.remaining = update.remaining ?? Math.max(0, stageMetrics.queued - stageMetrics.checked);
+        stageMetrics.errors = update.errorCount ?? stageMetrics.errors;
+        stageMetrics.lookupResults = Math.max(stageMetrics.lookupResults, stageMetrics.checked - stageMetrics.errors);
+      }
+      if (update.type === "reports_complete") {
+        stageMetrics.send = update.sendCount ?? stageMetrics.send;
+        stageMetrics.doNotSend = update.doNotSendCount ?? stageMetrics.doNotSend;
+        stageMetrics.lookupResults = update.lookupResultCount ?? stageMetrics.lookupResults;
+        stageMetrics.courses = update.courseFrequencyCount ?? stageMetrics.courses;
+      }
+    }
+
+    function metricsForStage(element) {
+      if (element === stageImport) {
+        return "Rows " + stageMetrics.importRows + " · Queued " + stageMetrics.queued;
+      }
+      if (element === stageLookup) {
+        return "Checked " + stageMetrics.checked + " · Remaining " + stageMetrics.remaining + " · Errors " + stageMetrics.errors;
+      }
+      return "Results " + stageMetrics.lookupResults + " · Send " + stageMetrics.send + " · Do-not-send " + stageMetrics.doNotSend;
     }
 
     function append(message) {
@@ -1841,6 +1955,7 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
     button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
     button:hover { background:var(--panel); border-color:var(--gold); }
     .resume-run { color:var(--accent-strong); }
+    .regenerate-run { color:var(--ok); }
     .delete-run { color:var(--danger); }
     .delete-run:disabled { cursor:not-allowed; opacity:.65; }
     .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
@@ -1881,6 +1996,30 @@ function runsHtml(runSummaries: PreviousRunSummary[]): string {
           alert(error instanceof Error ? error.message : String(error));
           button.disabled = false;
           button.textContent = "Resume";
+        }
+      });
+    });
+
+    document.querySelectorAll(".regenerate-run").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runId = button.dataset.runId;
+        if (!runId) return;
+        if (!confirm("Regenerate report files for run " + runId + " from stored lookup results? This will not contact Washington.")) return;
+
+        button.disabled = true;
+        button.textContent = "Regenerating...";
+
+        try {
+          const response = await fetch("/runs/" + encodeURIComponent(runId) + "/regenerate-reports", { method: "POST" });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.error || "Could not regenerate reports.");
+          }
+          window.location.reload();
+        } catch (error) {
+          alert(error instanceof Error ? error.message : String(error));
+          button.disabled = false;
+          button.textContent = "Regenerate Reports";
         }
       });
     });
@@ -2027,12 +2166,18 @@ function runHtml(run: PreviousRunSummary, isResumed = false): string {
         <div class="links">
           ${runFileLink(run.files.send)}
           ${runFileLink(run.files.doNotSend)}
+          ${runFileLink(run.files.sendCsv)}
+          ${runFileLink(run.files.doNotSendCsv)}
           ${runFileLink(run.files.coursesAlreadyTaken)}
+          ${runFileLink(run.files.workItems)}
+          ${runFileLink(run.files.lookupResults)}
+          ${runFileLink(run.files.courseFrequenciesJson)}
           ${runFileLink(run.files.expired)}
           ${runFileLink(run.files.greaterThan90)}
           ${runFileLink(run.files.exception)}
           ${runFileLink(run.files.runState)}
         </div>
+        ${regenerateRunButton(run)}
         ${resumeRunButton(run)}
         <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>
@@ -2049,6 +2194,11 @@ function resumeRelationshipText(run: PreviousRunSummary): string {
 function resumeRunButton(run: PreviousRunSummary): string {
   if (!run.state?.canResume || !run.state.lastLicenseNumber || run.state.phase === "complete") return "";
   return `<button type="button" class="resume-run" data-run-id="${escapeHtml(run.id)}">Resume</button>`;
+}
+
+function regenerateRunButton(run: PreviousRunSummary): string {
+  if (!run.files.lookupResults) return "";
+  return `<button type="button" class="regenerate-run" data-run-id="${escapeHtml(run.id)}">Regenerate Reports</button>`;
 }
 
 function runStateSummary(state: PreviousRunStateSummary | undefined): string {

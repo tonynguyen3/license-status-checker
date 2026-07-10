@@ -41,6 +41,7 @@ export interface DurableRunOptions {
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
+  resumeSourceOutDir?: string;
 }
 
 interface RunStateInitialValues {

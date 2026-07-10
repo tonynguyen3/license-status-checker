@@ -6,8 +6,11 @@
   "scripts": {
     "check": "tsc --noEmit",
     "start": "tsx src/main.ts",
+    "import": "tsx src/import-stage.ts",
+    "worker": "tsx src/worker-stage.ts",
+    "reports": "tsx src/reports-stage.ts",
     "web": "tsx src/web-server.ts",
-    "test": "vitest run",
+    "test": "vitest run --fileParallelism=false",
     "install:browsers": "playwright install"
   },
   "dependencies": {

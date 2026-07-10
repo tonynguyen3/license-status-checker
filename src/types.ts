@@ -64,6 +64,11 @@ export interface ProgressUpdate {
   remaining?: number;
   licenseNumber?: string;
   errorCount?: number;
+  sendCount?: number;
+  doNotSendCount?: number;
+  queuedCount?: number;
+  lookupResultCount?: number;
+  courseFrequencyCount?: number;
   canResume?: boolean;
   rateLimited?: boolean;
   files?: Record<string, string>;

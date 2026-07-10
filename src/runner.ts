@@ -14,7 +14,7 @@ import type { BucketedResult, CourseFrequency, OutputPaths, ProgressReporter, Tr
 import { WashingtonLicenseChecker } from "./washington-checker.js";
 
 export interface RunOptions {
-  input: string;
+  input?: string;
   outDir: string;
   runId?: string;
   worksheet?: string;
@@ -24,6 +24,7 @@ export interface RunOptions {
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
+  resumeSourceOutDir?: string;
   onProgress?: ProgressReporter;
   isCanceled?: () => boolean;
 }
@@ -34,6 +35,10 @@ export interface RunResult {
   courseFrequencyCount: number;
   outputPaths: OutputPaths;
   canceled: boolean;
+}
+
+export interface StageResult {
+  outputPaths: OutputPaths;
 }
 
 interface RunContext {
@@ -74,7 +79,8 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
       checkDelayMs: options.checkDelayMs ?? 1500,
       limit: options.limit,
       resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
-      resumedFromRunId: options.resumedFromRunId
+      resumedFromRunId: options.resumedFromRunId,
+      resumeSourceOutDir: options.resumeSourceOutDir
     }
   });
   await runState.writeInitial();
@@ -84,7 +90,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   };
   const logger = new Logger(reportProgress);
 
-  if (!existsSync(options.input)) {
+  if (!options.input || !existsSync(options.input)) {
     throw new Error(`Input spreadsheet not found: ${options.input}`);
   }
 
@@ -143,12 +149,69 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   };
 }
 
+export async function importPipelineWorkItems(options: RunOptions): Promise<ImportStageResult & StageResult> {
+  if (!options.input || !existsSync(options.input)) {
+    throw new Error(`Input spreadsheet not found: ${options.input}`);
+  }
+  const context = await createStageContext(options);
+  context.logger.logStart();
+  const result = await importWorkItems(context);
+  await ensureLogFiles(context.outputPaths);
+  return { ...result, outputPaths: context.outputPaths };
+}
+
+export async function processPipelineQueue(options: RunOptions): Promise<LookupStageResult & StageResult> {
+  const context = await createStageContext(options);
+  const result = await processLookupQueue(context);
+  await context.store.writeCourseFrequencies(result.courseFrequencies);
+  await ensureLogFiles(context.outputPaths);
+  return { ...result, outputPaths: context.outputPaths };
+}
+
+export async function generatePipelineReports(options: Pick<RunOptions, "outDir" | "runId" | "worksheet" | "headed" | "slowMo" | "checkDelayMs" | "limit">): Promise<ReportStageResult & StageResult> {
+  const outputPaths = buildOutputPaths(options.outDir);
+  const result = await regenerateReportsFromStore(outputPaths);
+  return { ...result, outputPaths };
+}
+
+async function createStageContext(options: RunOptions): Promise<RunContext> {
+  const outputPaths = buildOutputPaths(options.outDir);
+  const runState = new RunStateWriter(outputPaths.runStatePath, {
+    id: options.runId,
+    runOptions: {
+      worksheet: options.worksheet,
+      headed: options.headed,
+      slowMo: options.slowMo,
+      checkDelayMs: options.checkDelayMs ?? 1500,
+      limit: options.limit,
+      resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
+      resumedFromRunId: options.resumedFromRunId,
+      resumeSourceOutDir: options.resumeSourceOutDir
+    }
+  });
+  await runState.writeInitial();
+  const reportProgress: ProgressReporter = (update) => {
+    options.onProgress?.(update);
+    void runState.recordProgress(update);
+  };
+  return {
+    options,
+    outputPaths,
+    store: new PipelineStore(outputPaths),
+    runState,
+    logger: new Logger(reportProgress),
+    reportProgress
+  };
+}
+
 async function importWorkItems(context: RunContext): Promise<ImportStageResult> {
   const { options, outputPaths, store, logger, reportProgress } = context;
   await store.initialize();
   reportProgress({
     type: "import_started",
-    message: "Stage 1 of 3: importing eligible spreadsheet rows into a durable work queue.",
+    message: options.resumeSourceOutDir
+      ? "Stage 1 of 3: loading remaining work items from the previous run's durable queue."
+      : "Stage 1 of 3: importing eligible spreadsheet rows into a durable work queue.",
     files: {
       workItems: outputPaths.workItemsPath,
       lookupResults: outputPaths.lookupResultsPath,
@@ -156,7 +219,25 @@ async function importWorkItems(context: RunContext): Promise<ImportStageResult> 
     }
   });
 
+  if (options.resumeSourceOutDir) {
+    const queuedCount = await importRemainingWorkItemsFromPreviousRun(context, options.resumeSourceOutDir);
+    if (queuedCount !== undefined) {
+      reportProgress({
+      type: "import_complete",
+      message: `Stage 1 complete. Queued ${queuedCount} remaining website lookup work item(s) from the previous run.`,
+      current: queuedCount,
+      total: queuedCount,
+      queuedCount
+      });
+      return { queuedCount };
+    }
+  }
+
   let queuedCount = 0;
+  if (!options.input) {
+    throw new Error("Input spreadsheet is required for import stage.");
+  }
+
   const tradesmen = readEligibleTradesmen(options.input, logger, outputPaths, {
     worksheetName: options.worksheet,
     skipUntilAfterLicenseNumber: options.resumeAfterLicenseNumber,
@@ -181,21 +262,63 @@ async function importWorkItems(context: RunContext): Promise<ImportStageResult> 
     type: "import_complete",
     message: `Stage 1 complete. Queued ${queuedCount} website lookup work item(s).`,
     current: queuedCount,
-    total: queuedCount
+    total: queuedCount,
+    queuedCount
   });
 
   return { queuedCount };
 }
 
+async function importRemainingWorkItemsFromPreviousRun(context: RunContext, sourceOutDir: string): Promise<number | undefined> {
+  const { options, store } = context;
+  const sourceStore = new PipelineStore(buildOutputPaths(sourceOutDir));
+  const sourceWorkItems = await sourceStore.readWorkItems();
+  if (sourceWorkItems.length === 0) {
+    return undefined;
+  }
+
+  const sourceResults = await sourceStore.readLookupResults();
+  const completedIds = new Set(sourceResults.map((result) => result.workItemId).filter((id): id is number => id !== undefined));
+  const checkpointId = findCheckpointWorkItemId(sourceWorkItems, options.resumeAfterLicenseNumber);
+  const queuedItems = sourceWorkItems.filter((item) => item.id > checkpointId && !completedIds.has(item.id));
+
+  let queuedCount = 0;
+  for (const item of queuedItems) {
+    queuedCount++;
+    const tradesman: Tradesman = {
+      ...item.tradesman,
+      workItemId: queuedCount
+    };
+    await store.appendWorkItem({
+      id: queuedCount,
+      tradesman,
+      status: "queued",
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  return queuedCount;
+}
+
+function findCheckpointWorkItemId(workItems: { id: number; tradesman: Tradesman }[], licenseNumber?: string): number {
+  if (!licenseNumber) return 0;
+  const normalized = licenseNumber.trim().toUpperCase();
+  const checkpoint = workItems.find((item) => item.tradesman.licenseNumber.trim().toUpperCase() === normalized);
+  return checkpoint?.id ?? 0;
+}
+
 async function processLookupQueue(context: RunContext): Promise<LookupStageResult> {
   const { options, outputPaths, store, logger, runState, reportProgress } = context;
   const workItems = await store.readWorkItems();
+  const existingResults = await store.readLookupResults();
+  const completedIds = new Set(existingResults.map((result) => result.workItemId).filter((id): id is number => id !== undefined));
+  const remainingWorkItems = workItems.filter((item) => !completedIds.has(item.id));
   reportProgress({
     type: "lookup_started",
-    message: `Stage 2 of 3: processing ${workItems.length} queued website lookup item(s).`,
+    message: `Stage 2 of 3: processing ${remainingWorkItems.length} queued website lookup item(s).`,
     current: 0,
-    total: workItems.length,
-    remaining: workItems.length
+    total: remainingWorkItems.length,
+    remaining: remainingWorkItems.length
   });
 
   let sendCount = 0;
@@ -218,7 +341,7 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
     isCanceled: options.isCanceled
   });
 
-  const result = await checker.checkLicenses(workItems.map((item) => item.tradesman));
+  const result = await checker.checkLicenses(remainingWorkItems.map((item) => item.tradesman));
   await store.writeCourseFrequencies(result.courseFrequencies);
 
   return {
@@ -237,23 +360,15 @@ async function generateReports(context: RunContext, lookupResult: LookupStageRes
     message: "Stage 3 of 3: generating CSV, Excel, and summary reports from durable lookup results."
   });
 
-  const results = await store.readLookupResults();
-  const sendTradesmen = results.filter((result) => result.bucket === "send").map((result) => result.tradesman);
-  const doNotSendTradesmen = results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman);
-  const courseFrequencies = await store.readCourseFrequencies();
-  const courses = courseFrequencies.length > 0 ? courseFrequencies : lookupResult.courseFrequencies;
-
-  await Promise.all([
-    writeTradesmenCsv(sendTradesmen, outputPaths.sendCsvPath),
-    writeTradesmenCsv(doNotSendTradesmen, outputPaths.doNotSendCsvPath),
-    writeTradesmenWorkbook(sendTradesmen, outputPaths.sendPath),
-    writeTradesmenWorkbook(doNotSendTradesmen, outputPaths.doNotSendPath),
-    writeCourseFrequencies(courses, outputPaths.coursesAlreadyTakenPath)
-  ]);
+  const result = await regenerateReportsFromStore(outputPaths, lookupResult.courseFrequencies);
 
   reportProgress({
     type: "reports_complete",
-    message: `Stage 3 complete. Generated reports from ${results.length} stored lookup result(s).`,
+    message: `Stage 3 complete. Generated reports from ${result.lookupResultCount} stored lookup result(s).`,
+    sendCount: result.sendCount,
+    doNotSendCount: result.doNotSendCount,
+    lookupResultCount: result.lookupResultCount,
+    courseFrequencyCount: result.courseFrequencyCount,
     files: {
       sendCsv: outputPaths.sendCsvPath,
       doNotSendCsv: outputPaths.doNotSendCsvPath,
@@ -264,9 +379,36 @@ async function generateReports(context: RunContext, lookupResult: LookupStageRes
   });
 
   return {
+    sendCount: result.sendCount,
+    doNotSendCount: result.doNotSendCount,
+    courseFrequencyCount: result.courseFrequencyCount
+  };
+}
+
+export async function regenerateReportsFromStore(
+  outputPaths: OutputPaths,
+  fallbackCourseFrequencies: CourseFrequency[] = []
+): Promise<ReportStageResult & { lookupResultCount: number }> {
+  const store = new PipelineStore(outputPaths);
+  const results = await store.readLookupResults();
+  const sendTradesmen = results.filter((result) => result.bucket === "send").map((result) => result.tradesman);
+  const doNotSendTradesmen = results.filter((result) => result.bucket === "doNotSend").map((result) => result.tradesman);
+  const courseFrequencies = await store.readCourseFrequencies();
+  const courses = courseFrequencies.length > 0 ? courseFrequencies : fallbackCourseFrequencies;
+
+  await Promise.all([
+    writeTradesmenCsv(sendTradesmen, outputPaths.sendCsvPath),
+    writeTradesmenCsv(doNotSendTradesmen, outputPaths.doNotSendCsvPath),
+    writeTradesmenWorkbook(sendTradesmen, outputPaths.sendPath),
+    writeTradesmenWorkbook(doNotSendTradesmen, outputPaths.doNotSendPath),
+    writeCourseFrequencies(courses, outputPaths.coursesAlreadyTakenPath)
+  ]);
+
+  return {
     sendCount: sendTradesmen.length,
     doNotSendCount: doNotSendTradesmen.length,
-    courseFrequencyCount: courses.length
+    courseFrequencyCount: courses.length,
+    lookupResultCount: results.length
   };
 }
 

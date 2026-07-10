@@ -159,6 +159,8 @@ The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional
 
 The `Previous Runs` page lists run folders, shows summary counts from `run-state.json`, groups resumed runs with the original run, and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
 
+Runs with durable `lookup-results.jsonl` data also show a `Regenerate Reports` button on the Previous Runs page. This rebuilds `Send.csv`, `DoNotSend.csv`, `Send-{date}.xlsx`, `DoNotSend-{date}.xlsx`, and course reports from stored lookup results without contacting Washington again.
+
 If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
 
 ### Streaming And Resume Behavior
@@ -172,6 +174,16 @@ The web run pipeline is designed to be friendlier to cloud or small-VM hosting. 
 The durable JSONL files make the workflow less tightly coupled to the browser worker. They also make future cloud deployments easier because the web UI, queue worker, and report generator can become separate processes later without changing the run folder contract.
 
 Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
+
+The default `npm start` command still runs all stages end-to-end. For cloud-style operation, the stages can also be run separately against the same output directory:
+
+```bash
+npm run import -- --input ./Files/ListToCheck.xlsx --out-dir ./Files/manual-run
+npm run worker -- --out-dir ./Files/manual-run --check-delay-ms 1500
+npm run reports -- --out-dir ./Files/manual-run
+```
+
+`npm run import` creates `work-items.jsonl`, `npm run worker` consumes queued work items and writes `lookup-results.jsonl`, and `npm run reports` regenerates CSV/Excel files from stored lookup results without contacting Washington.
 
 Each web upload or email-loaded workbook is stored under a timestamped run folder:
 

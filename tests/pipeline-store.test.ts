@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { PipelineStore } from "../src/pipeline-store.js";
 import { buildOutputPaths } from "../src/paths.js";
+import { regenerateReportsFromStore } from "../src/runner.js";
+import { readTradesmenCsv, readTradesmenWorkbook } from "../src/spreadsheet.js";
 
 describe("PipelineStore", () => {
   it("persists queued work items and lookup results as durable JSONL", async () => {
@@ -47,6 +49,44 @@ describe("PipelineStore", () => {
     ]);
     await expect(store.readCourseFrequencies()).resolves.toEqual([
       { courseName: "Code Update", courseCode: "CE1", frequency: 2 }
+    ]);
+  });
+
+  it("regenerates report files from stored lookup results", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-status-checker-"));
+    const outputPaths = buildOutputPaths(dir, new Date(2026, 6, 6));
+    const store = new PipelineStore(outputPaths);
+
+    await store.initialize();
+    await store.appendLookupResult({
+      bucket: "send",
+      tradesman: {
+        workItemId: 1,
+        licenseNumber: "EL-SEND",
+        name: "Sender"
+      }
+    });
+    await store.appendLookupResult({
+      bucket: "doNotSend",
+      tradesman: {
+        workItemId: 2,
+        licenseNumber: "EL-NO",
+        name: "Nope",
+        notSendReason: "Already renewed"
+      }
+    });
+
+    await expect(regenerateReportsFromStore(outputPaths)).resolves.toEqual({
+      sendCount: 1,
+      doNotSendCount: 1,
+      courseFrequencyCount: 0,
+      lookupResultCount: 2
+    });
+    await expect(readTradesmenCsv(outputPaths.sendCsvPath)).resolves.toEqual([
+      expect.objectContaining({ licenseNumber: "EL-SEND" })
+    ]);
+    await expect(readTradesmenWorkbook(outputPaths.doNotSendPath)).resolves.toEqual([
+      expect.objectContaining({ licenseNumber: "EL-NO", notSendReason: "Already renewed" })
     ]);
   });
 });
