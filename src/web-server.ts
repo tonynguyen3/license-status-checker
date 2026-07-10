@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
@@ -14,6 +14,7 @@ loadEnvFile();
 const port = Number(process.env.PORT ?? 3000);
 const rootDir = resolve("Files", "web-runs");
 const emailPollLogPath = resolve("Files", "email-poll.log");
+const appIconPath = resolve("docs", "license-status-checker-icon.png");
 const uploads = new Map<string, UploadedWorkbook>();
 const runs = new Map<string, WebRun>();
 const emailPollState: EmailPollStatus = {
@@ -78,6 +79,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/app-icon.png") {
+      await sendPngFile(response, appIconPath);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/runs") {
       await handleRunsPage(response);
       return;
@@ -116,6 +122,12 @@ const server = createServer(async (request, response) => {
     const cancelMatch = url.pathname.match(/^\/runs\/([^/]+)\/cancel$/);
     if (request.method === "POST" && cancelMatch) {
       handleCancel(cancelMatch[1], response);
+      return;
+    }
+
+    const deleteMatch = url.pathname.match(/^\/runs\/([^/]+)\/delete$/);
+    if (request.method === "POST" && deleteMatch) {
+      await handleDeleteRun(deleteMatch[1], response);
       return;
     }
 
@@ -396,6 +408,36 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
   createReadStream(path).pipe(response);
 }
 
+async function handleDeleteRun(runId: string, response: ServerResponse): Promise<void> {
+  const run = runs.get(runId);
+  if (run?.status === "running") {
+    sendJson(response, 409, { error: "Cannot delete a run while it is still running. Stop the run first." });
+    return;
+  }
+
+  const runDir = runDirectory(runId);
+  if (!runDir) {
+    sendJson(response, 400, { error: "Invalid run id." });
+    return;
+  }
+
+  try {
+    const folderStat = await stat(runDir);
+    if (!folderStat.isDirectory()) {
+      sendJson(response, 404, { error: "Run folder not found." });
+      return;
+    }
+  } catch {
+    sendJson(response, 404, { error: "Run folder not found." });
+    return;
+  }
+
+  await rm(runDir, { recursive: true, force: true });
+  runs.delete(runId);
+  uploads.delete(runId);
+  sendJson(response, 200, { deleted: true, runId });
+}
+
 async function handleRunsPage(response: ServerResponse): Promise<void> {
   const runSummaries = await listPreviousRuns();
   sendHtml(response, runsHtml(runSummaries));
@@ -490,7 +532,10 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
   const run = runs.get(runId);
   if (run?.outputPaths) return run.outputPaths;
 
-  const outputDir = join(rootDir, runId, "output");
+  const runDir = runDirectory(runId);
+  if (!runDir) return undefined;
+
+  const outputDir = join(runDir, "output");
   const files = await filesInDirectory(outputDir);
   const send = files.find((file) => /^Send-.+\.xlsx$/i.test(file));
   const doNotSend = files.find((file) => /^DoNotSend-.+\.xlsx$/i.test(file));
@@ -518,7 +563,10 @@ async function listPreviousRuns(): Promise<Array<{ id: string; createdAt: string
     const outputPaths = await outputPathsForRun(entry.name);
     if (!outputPaths) continue;
 
-    const folderStat = await stat(join(rootDir, entry.name));
+    const runDir = runDirectory(entry.name);
+    if (!runDir) continue;
+
+    const folderStat = await stat(runDir);
     summaries.push({
       id: entry.name,
       createdAt: folderStat.birthtime.toLocaleString(),
@@ -527,6 +575,16 @@ async function listPreviousRuns(): Promise<Array<{ id: string; createdAt: string
   }
 
   return summaries.sort((a, b) => b.id.localeCompare(a.id));
+}
+
+function runDirectory(runId: string): string | undefined {
+  if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === "." || runId === "..") return undefined;
+
+  const directory = resolve(rootDir, runId);
+  const rootWithSeparator = `${rootDir}${rootDir.endsWith("/") ? "" : "/"}`;
+  if (directory !== rootDir && !directory.startsWith(rootWithSeparator)) return undefined;
+
+  return directory;
 }
 
 async function filesInDirectory(path: string): Promise<string[]> {
@@ -598,6 +656,25 @@ function sendJson(response: ServerResponse, status: number, payload: unknown): v
 function sendHtml(response: ServerResponse, html: string): void {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(html);
+}
+
+async function sendPngFile(response: ServerResponse, path: string): Promise<void> {
+  try {
+    const fileStat = await stat(path);
+    if (!fileStat.isFile()) {
+      sendJson(response, 404, { error: "File not found." });
+      return;
+    }
+  } catch {
+    sendJson(response, 404, { error: "File not found." });
+    return;
+  }
+
+  response.writeHead(200, {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=3600"
+  });
+  createReadStream(path).pipe(response);
 }
 
 function requestBaseUrl(request: IncomingMessage): string {
@@ -790,21 +867,27 @@ function pageHtml(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="apple-touch-icon" href="/app-icon.png">
   <title>License Status Checker</title>
   <style>
-    :root { color-scheme: light; --ink:#202124; --muted:#5f6368; --line:#dadce0; --panel:#f8fafd; --accent:#0b57d0; --ok:#137333; --warn:#b06000; }
+    :root { color-scheme: light; --ink:#10233f; --muted:#5d6673; --line:#cfd8d3; --panel:#f4faf6; --accent:#005f3c; --accent-strong:#00345f; --ok:#0b6f43; --warn:#d19300; --danger:#b3261e; --gold:#f6be00; }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fff; }
-    header { border-bottom:1px solid var(--line); padding:18px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
-    h1 { font-size:20px; margin:0; font-weight:700; }
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fbfdfb; }
+    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
+    h1 { font-size:20px; margin:0; font-weight:700; color:var(--accent-strong); }
+    .brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
     main { display:grid; grid-template-columns: 360px 1fr; min-height:calc(100vh - 65px); }
     aside { border-right:1px solid var(--line); padding:20px; background:var(--panel); }
     section { padding:20px 24px; }
     label { display:block; font-size:13px; font-weight:700; margin:18px 0 6px; }
-    input, select { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:14px; background:#fff; }
+    input, select { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:14px; background:#fff; color:var(--ink); }
+    input:focus, select:focus { outline:2px solid rgba(246,190,0,.45); border-color:var(--accent); }
     input[type="checkbox"] { width:auto; min-height:auto; }
     button { min-height:38px; border:0; border-radius:6px; padding:8px 12px; font-size:14px; font-weight:700; background:var(--accent); color:#fff; cursor:pointer; }
-    button.danger { background:#b3261e; }
+    button:hover:not(:disabled) { background:var(--accent-strong); }
+    button.danger { background:var(--danger); }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; }
     .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px; }
@@ -813,7 +896,7 @@ function pageHtml(): string {
     .stack { display:grid; gap:12px; }
     .meta { color:var(--muted); font-size:13px; line-height:1.4; }
     .progress { margin:0 0 18px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
-    .bar { height:100%; width:0%; background:var(--ok); transition:width .2s ease; }
+    .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
     .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#fff; }
     .feed div { padding:5px 0; border-bottom:1px solid #f1f3f4; }
     .files { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:14px; }
@@ -824,7 +907,7 @@ function pageHtml(): string {
     .file-icon.excel { color:#137333; border-color:#9bc3a8; background:#f3fbf5; }
     .file-icon.text { color:#5f6368; border-color:#c7ccd1; background:#f8fafd; }
     .file-actions { display:flex; gap:8px; flex:0 0 auto; }
-    .file a { color:var(--accent); font-weight:700; text-decoration:none; }
+    .file a, .meta a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
     .status-box { border:1px solid var(--line); border-radius:6px; padding:10px; background:#fff; }
     .status-box h2 { font-size:14px; margin:0 0 8px; }
     .status-box dl { margin:0; display:grid; gap:6px; }
@@ -838,7 +921,10 @@ function pageHtml(): string {
 </head>
 <body>
   <header>
-    <h1>License Status Checker</h1>
+    <div class="brand">
+      <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true">
+      <h1>License Status Checker</h1>
+    </div>
     <div class="meta"><a href="/runs">Previous Runs</a> · <span id="status">Upload a workbook to begin.</span></div>
   </header>
   <main>
@@ -1190,18 +1276,21 @@ interface FileLink {
 
 function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>): string {
   const rows = runSummaries.map((run) => `
-    <section class="run">
+    <section class="run" data-run="${escapeHtml(run.id)}">
       <div>
         <h2>${escapeHtml(run.id)}</h2>
         <p>${escapeHtml(run.createdAt)}</p>
       </div>
-      <div class="links">
-        ${runFileLink(run.files.send)}
-        ${runFileLink(run.files.doNotSend)}
-        ${runFileLink(run.files.coursesAlreadyTaken)}
-        ${runFileLink(run.files.expired)}
-        ${runFileLink(run.files.greaterThan90)}
-        ${runFileLink(run.files.exception)}
+      <div class="run-actions">
+        <div class="links">
+          ${runFileLink(run.files.send)}
+          ${runFileLink(run.files.doNotSend)}
+          ${runFileLink(run.files.coursesAlreadyTaken)}
+          ${runFileLink(run.files.expired)}
+          ${runFileLink(run.files.greaterThan90)}
+          ${runFileLink(run.files.exception)}
+        </div>
+        <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>
     </section>
   `).join("");
@@ -1211,29 +1300,71 @@ function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Re
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="apple-touch-icon" href="/app-icon.png">
   <title>Previous Runs</title>
   <style>
-    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:#202124; background:#fff; }
-    header { border-bottom:1px solid #dadce0; padding:18px 24px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
-    h1 { font-size:20px; margin:0; }
+    :root { color-scheme: light; --ink:#10233f; --muted:#5d6673; --line:#cfd8d3; --panel:#f4faf6; --accent:#005f3c; --accent-strong:#00345f; --danger:#b3261e; --gold:#f6be00; }
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fbfdfb; }
+    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
+    h1 { font-size:20px; margin:0; color:var(--accent-strong); }
     main { max-width:1100px; margin:0 auto; padding:20px 24px; }
-    a { color:#0b57d0; font-weight:700; text-decoration:none; }
-    .run { border:1px solid #dadce0; border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
+    .brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
+    .run { border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
     h2 { font-size:16px; margin:0 0 4px; }
-    p { margin:0; color:#5f6368; font-size:13px; }
+    p { margin:0; color:var(--muted); font-size:13px; }
+    button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
+    button:hover { background:var(--panel); border-color:var(--gold); }
+    .delete-run { color:var(--danger); }
+    .delete-run:disabled { cursor:not-allowed; opacity:.65; }
+    .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
     .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
-    .empty { color:#5f6368; border:1px solid #dadce0; border-radius:6px; padding:18px; }
-    @media (max-width: 760px) { .run { display:block; } .links { justify-content:flex-start; margin-top:12px; } }
+    .empty { color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:18px; background:#fff; }
+    @media (max-width: 760px) { .run { display:block; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>Previous Runs</h1>
+    <div class="brand">
+      <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true">
+      <h1>Previous Runs</h1>
+    </div>
     <a href="/">New Run</a>
   </header>
   <main>
     ${rows || '<div class="empty">No completed runs found yet.</div>'}
   </main>
+  <script>
+    document.querySelectorAll(".delete-run").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const runId = button.dataset.runId;
+        if (!runId) return;
+        if (!confirm("Delete run " + runId + " and remove its folder from disk?")) return;
+
+        button.disabled = true;
+        button.textContent = "Deleting...";
+
+        try {
+          const response = await fetch("/runs/" + encodeURIComponent(runId) + "/delete", { method: "POST" });
+          const result = await response.json();
+          if (!response.ok) {
+            throw new Error(result.error || "Could not delete run.");
+          }
+
+          button.closest(".run")?.remove();
+          if (!document.querySelector(".run")) {
+            document.querySelector("main").innerHTML = '<div class="empty">No completed runs found yet.</div>';
+          }
+        } catch (error) {
+          alert(error instanceof Error ? error.message : String(error));
+          button.disabled = false;
+          button.textContent = "Delete";
+        }
+      });
+    });
+  </script>
 </body>
 </html>`;
 }

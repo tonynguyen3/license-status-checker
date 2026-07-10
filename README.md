@@ -68,6 +68,13 @@ Each worksheet must use the Washington L&I export-style columns:
 License Type, License Number, Name, Address1, Address2, City, State, Zip, ExpirationDate
 ```
 
+Spreadsheet rows are filtered before the app opens the Washington website:
+
+- rows with missing license numbers or missing/invalid expiration dates are written to `exception.txt`
+- rows with expiration dates in the past are written to `expired.txt`
+- rows with expiration dates more than 90 days away are written to `greaterThan90.txt`
+- only rows expiring today through 90 days from today are sent to the Washington website check
+
 Generated output files are written to the output directory. By default, that is also `Files/`. You can change it with `--out-dir`.
 
 - `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits.
@@ -137,6 +144,8 @@ http://localhost:3000
 ![License Status Checker web interface](docs/web-interface.png)
 
 The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional website check limit, set a pause between Washington website checks, and run the check. Progress is streamed to the page while the app loads the workbook, counts eligible rows, checks each license, and writes outputs. When the run finishes, the page shows view/download links for the output workbooks and logs.
+
+The `Previous Runs` page lists completed run folders and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
 
 If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
 
