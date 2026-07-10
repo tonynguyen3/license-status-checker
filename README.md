@@ -133,6 +133,7 @@ npm start -- --worksheet Electricians
 npm start -- --worksheet "Plumber Trainees" --limit 5
 npm start -- --headed
 npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 1500
+npm start -- --website-retries 1 --retry-delay-ms 5000 --retry-backoff-multiplier 2
 ```
 
 `--headed` opens the browser visibly, which is helpful while validating selectors against the state website.
@@ -140,6 +141,8 @@ npm start -- --limit 10 --headed --slow-mo 100 --check-delay-ms 1500
 `--slow-mo` is a Playwright/browser debugging option. It slows down low-level browser actions such as navigation, locator operations, clicks, and typing. It is most useful with `--headed` when you want to watch what the browser is doing. It does not guarantee a clean pause between one license row and the next.
 
 `--check-delay-ms` is the app-level Washington website throttle. It controls the pause between one license/person lookup and the next license/person lookup. This is the important setting for being gentle with the Washington website and reducing the chance of F5/HTTP `429` rate limits. It defaults to `1500`, which waits about 1.5 seconds between license rows.
+
+`--website-retries`, `--retry-delay-ms`, and `--retry-backoff-multiplier` control retries for transient website/browser failures. Rate-limit responses are not retried; the worker stops so you can resume later instead of repeatedly hitting Washington. The defaults are one retry, a 5000 ms first delay, and a 2x backoff multiplier.
 
 ## Web Interface
 
@@ -177,13 +180,15 @@ The web run pipeline is designed to be friendlier to cloud or small-VM hosting. 
 
 The durable JSONL files make the workflow less tightly coupled to the browser worker. They also make future cloud deployments easier because the web UI, queue worker, and report generator can become separate processes later without changing the run folder contract.
 
+The app now uses a pipeline storage boundary internally. The current implementation is a filesystem/JSONL adapter, but the runner depends on storage interfaces for the work queue, lookup results, course frequencies, and worker control/status. That keeps local runs simple while leaving a clear place to add Azure Queue/Blob/SQL, Cosmos DB, Google Cloud Storage/Pub/Sub/Firestore, or another cloud adapter later.
+
 Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
 
 The default `npm start` command still runs all stages end-to-end. For cloud-style operation, the stages can also be run separately against the same output directory:
 
 ```bash
 npm run import -- --input ./Files/ListToCheck.xlsx --out-dir ./Files/manual-run
-npm run worker -- --out-dir ./Files/manual-run --check-delay-ms 1500
+npm run worker -- --out-dir ./Files/manual-run --check-delay-ms 1500 --website-retries 1 --retry-delay-ms 5000
 npm run reports -- --out-dir ./Files/manual-run
 ```
 
@@ -280,6 +285,9 @@ EMAIL_POLL_TIME=06:00
 EMAIL_POLL_WORKSHEET=Electricians
 EMAIL_POLL_LIMIT=50
 EMAIL_POLL_CHECK_DELAY_MS=1500
+EMAIL_POLL_WEBSITE_RETRIES=1
+EMAIL_POLL_RETRY_DELAY_MS=5000
+EMAIL_POLL_RETRY_BACKOFF_MULTIPLIER=2
 EMAIL_POLL_HEADED=false
 ```
 
@@ -290,6 +298,8 @@ The web page shows the scheduler status, including the last checked time, last r
 The UI buttons use the run settings already loaded from `.env`, including `EMAIL_POLL_WORKSHEET`, `EMAIL_POLL_LIMIT`, and `EMAIL_POLL_CHECK_DELAY_MS`. The poll time entered in the UI overrides `EMAIL_POLL_TIME` for the current server process only. These are runtime controls: disabling polling in the UI stops the pending timer, and enabling polling starts a new timer. `.env` still controls the default polling state and default poll time the next time the server starts.
 
 `EMAIL_POLL_CHECK_DELAY_MS` has the same meaning as `--check-delay-ms`: it is the app-level pause between Washington license/person lookups during a scheduled run. It is not the same as `--slow-mo`, which is only for slowing down browser actions while debugging.
+
+`EMAIL_POLL_WEBSITE_RETRIES`, `EMAIL_POLL_RETRY_DELAY_MS`, and `EMAIL_POLL_RETRY_BACKOFF_MULTIPLIER` mirror the CLI retry settings for scheduled runs.
 
 The app also writes scheduled email polling activity to:
 

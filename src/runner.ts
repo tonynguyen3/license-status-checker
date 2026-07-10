@@ -1,7 +1,8 @@
 import { appendFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { Logger } from "./logger.js";
-import { PipelineStore, type WorkItem } from "./pipeline-store.js";
+import { PipelineStore } from "./pipeline-store.js";
+import type { PipelineStorage, WorkItem } from "./pipeline-storage.js";
 import { buildOutputPaths } from "./paths.js";
 import { RunStateWriter } from "./run-state.js";
 import {
@@ -21,6 +22,9 @@ export interface RunOptions {
   headed: boolean;
   slowMo: number;
   checkDelayMs?: number;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+  retryBackoffMultiplier?: number;
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
@@ -44,7 +48,7 @@ export interface StageResult {
 interface RunContext {
   options: RunOptions;
   outputPaths: OutputPaths;
-  store: PipelineStore;
+  store: PipelineStorage;
   runState: RunStateWriter;
   logger: Logger;
   reportProgress: ProgressReporter;
@@ -77,6 +81,9 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
       headed: options.headed,
       slowMo: options.slowMo,
       checkDelayMs: options.checkDelayMs ?? 1500,
+      retryAttempts: options.retryAttempts ?? 1,
+      retryDelayMs: options.retryDelayMs ?? 5000,
+      retryBackoffMultiplier: options.retryBackoffMultiplier ?? 2,
       limit: options.limit,
       resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
       resumedFromRunId: options.resumedFromRunId,
@@ -168,7 +175,7 @@ export async function processPipelineQueue(options: RunOptions): Promise<LookupS
   return { ...result, outputPaths: context.outputPaths };
 }
 
-export async function generatePipelineReports(options: Pick<RunOptions, "outDir" | "runId" | "worksheet" | "headed" | "slowMo" | "checkDelayMs" | "limit">): Promise<ReportStageResult & StageResult> {
+export async function generatePipelineReports(options: Pick<RunOptions, "outDir" | "runId" | "worksheet" | "headed" | "slowMo" | "checkDelayMs" | "retryAttempts" | "retryDelayMs" | "retryBackoffMultiplier" | "limit">): Promise<ReportStageResult & StageResult> {
   const outputPaths = buildOutputPaths(options.outDir);
   const result = await regenerateReportsFromStore(outputPaths);
   return { ...result, outputPaths };
@@ -183,6 +190,9 @@ async function createStageContext(options: RunOptions): Promise<RunContext> {
       headed: options.headed,
       slowMo: options.slowMo,
       checkDelayMs: options.checkDelayMs ?? 1500,
+      retryAttempts: options.retryAttempts ?? 1,
+      retryDelayMs: options.retryDelayMs ?? 5000,
+      retryBackoffMultiplier: options.retryBackoffMultiplier ?? 2,
       limit: options.limit,
       resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
       resumedFromRunId: options.resumedFromRunId,
@@ -357,6 +367,9 @@ async function processLookupQueue(context: RunContext): Promise<LookupStageResul
       headed: options.headed,
       slowMo: options.slowMo,
       checkDelayMs: options.checkDelayMs ?? 1500,
+      retryAttempts: options.retryAttempts ?? 1,
+      retryDelayMs: options.retryDelayMs ?? 5000,
+      retryBackoffMultiplier: options.retryBackoffMultiplier ?? 2,
       limit: options.limit,
       onProgress: (update) => {
         reportProgress(update);

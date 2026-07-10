@@ -1,42 +1,15 @@
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { BucketedResult, CourseFrequency, OutputPaths, Tradesman } from "./types.js";
-
-export interface WorkItem {
-  id: number;
-  tradesman: Tradesman;
-  status: "queued";
-  createdAt: string;
-}
-
-export interface LookupResultRecord {
-  workItemId?: number;
-  bucket: BucketedResult["bucket"];
-  tradesman: Tradesman;
-  checkedAt: string;
-}
-
-export type WorkerStatusName = "queued" | "running" | "paused" | "rate_limited" | "completed" | "failed";
-
-export interface WorkerStatus {
-  status: WorkerStatusName;
-  pid?: number;
-  startedAt?: string;
-  heartbeatAt?: string;
-  completedAt?: string;
-  checked: number;
-  remaining: number;
-  errors: number;
-  message?: string;
-}
+import type { BucketedResult, CourseFrequency, OutputPaths } from "./types.js";
+import type { LookupResultRecord, PipelineStorage, WorkerStatus, WorkerStatusName, WorkItem } from "./pipeline-storage.js";
 
 interface WorkerControl {
   pauseRequested?: boolean;
   updatedAt?: string;
 }
 
-export class PipelineStore {
+export class PipelineStore implements PipelineStorage {
   constructor(private readonly outputPaths: OutputPaths) {}
 
   async initialize(): Promise<void> {

@@ -20,4 +20,19 @@ describe("readArgs", () => {
 
     expect(args.checkDelayMs).toBe(4500);
   });
+
+  it("supports configurable website retry/backoff settings", () => {
+    const args = readArgs([
+      "--website-retries",
+      "3",
+      "--retry-delay-ms",
+      "7000",
+      "--retry-backoff-multiplier",
+      "1.5"
+    ]);
+
+    expect(args.retryAttempts).toBe(3);
+    expect(args.retryDelayMs).toBe(7000);
+    expect(args.retryBackoffMultiplier).toBe(1.5);
+  });
 });

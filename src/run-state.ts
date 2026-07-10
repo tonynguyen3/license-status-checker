@@ -38,6 +38,9 @@ export interface DurableRunOptions {
   headed: boolean;
   slowMo: number;
   checkDelayMs: number;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+  retryBackoffMultiplier?: number;
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
@@ -103,7 +106,7 @@ export class RunStateWriter {
       this.state.counts.eligible = update.total ?? update.current ?? this.state.counts.eligible;
     }
 
-    if (update.type === "lookup_started" || update.type === "checks_started" || update.type === "checks_progress") {
+    if (update.type === "lookup_started" || update.type === "checks_started" || update.type === "checks_progress" || update.type === "website_check_retry") {
       this.state.phase = "checking";
       this.state.counts.checked = update.current ?? this.state.counts.checked;
       this.state.counts.errors = update.errorCount ?? this.state.counts.errors;

@@ -7,6 +7,9 @@ export interface CliArgs {
   headed: boolean;
   slowMo: number;
   checkDelayMs: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+  retryBackoffMultiplier: number;
   limit?: number;
 }
 
@@ -37,6 +40,9 @@ export function readArgs(argv: string[]): CliArgs {
   const input = String(args.get("input") ?? resolve(outDir, "ListToCheck.xlsx"));
   const limitValue = args.get("limit");
   const checkDelayValue = Number(args.get("check-delay-ms") ?? 1500);
+  const retryAttemptsValue = Number(args.get("website-retries") ?? 1);
+  const retryDelayValue = Number(args.get("retry-delay-ms") ?? 5000);
+  const retryBackoffValue = Number(args.get("retry-backoff-multiplier") ?? 2);
 
   return {
     input: resolve(input),
@@ -45,6 +51,9 @@ export function readArgs(argv: string[]): CliArgs {
     headed: args.get("headed") === true,
     slowMo: Number(args.get("slow-mo") ?? 0),
     checkDelayMs: Number.isFinite(checkDelayValue) && checkDelayValue >= 0 ? checkDelayValue : 1500,
+    retryAttempts: Number.isFinite(retryAttemptsValue) && retryAttemptsValue >= 0 ? retryAttemptsValue : 1,
+    retryDelayMs: Number.isFinite(retryDelayValue) && retryDelayValue >= 0 ? retryDelayValue : 5000,
+    retryBackoffMultiplier: Number.isFinite(retryBackoffValue) && retryBackoffValue >= 1 ? retryBackoffValue : 2,
     limit: typeof limitValue === "string" ? Number(limitValue) : undefined
   };
 }

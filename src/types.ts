@@ -35,6 +35,9 @@ export interface CheckerOptions {
   headed: boolean;
   slowMo: number;
   checkDelayMs: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+  retryBackoffMultiplier: number;
   limit?: number;
   onProgress?: ProgressReporter;
   onResult?: (result: BucketedResult) => void | Promise<void>;
@@ -67,6 +70,8 @@ export interface ProgressUpdate {
   remaining?: number;
   licenseNumber?: string;
   errorCount?: number;
+  attempt?: number;
+  retryDelayMs?: number;
   sendCount?: number;
   doNotSendCount?: number;
   queuedCount?: number;

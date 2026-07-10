@@ -119,7 +119,11 @@ export class WashingtonLicenseChecker {
         }
 
         try {
-          const result = await this.checkLicense(page, tradesman);
+          const result = await this.checkLicenseWithRetries(page, tradesman, {
+            current: checkedCount,
+            total,
+            errorCount
+          });
           if (shouldCollectResults) {
             results.push(result);
           }
@@ -213,6 +217,45 @@ export class WashingtonLicenseChecker {
     }
   }
 
+  private async checkLicenseWithRetries(
+    page: Page,
+    tradesman: Tradesman,
+    progress: { current: number; total: number | undefined; errorCount: number }
+  ): Promise<BucketedResult> {
+    const retryAttempts = Math.max(0, this.options.retryAttempts);
+    const retryDelayMs = Math.max(0, this.options.retryDelayMs);
+    const retryBackoffMultiplier = Math.max(1, this.options.retryBackoffMultiplier);
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.checkLicense(page, tradesman);
+      } catch (error) {
+        if (
+          error instanceof WashingtonRateLimitError ||
+          this.options.isCanceled?.() ||
+          attempt >= retryAttempts
+        ) {
+          throw error;
+        }
+
+        const nextAttempt = attempt + 2;
+        const delayMs = Math.round(retryDelayMs * Math.pow(retryBackoffMultiplier, attempt));
+        this.options.onProgress?.({
+          type: "website_check_retry",
+          message: `Website check error for ${describeTradesman(tradesman)}. Retrying attempt ${nextAttempt} of ${retryAttempts + 1} after ${delayMs} ms.`,
+          current: progress.current,
+          total: progress.total,
+          remaining: remainingChecks(progress.total, progress.current),
+          licenseNumber: tradesman.licenseNumber,
+          errorCount: progress.errorCount,
+          attempt: nextAttempt,
+          retryDelayMs: delayMs
+        });
+        await this.pauseForRetry(delayMs);
+      }
+    }
+  }
+
   async checkLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
     const response = await page.goto(
       `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
@@ -285,6 +328,16 @@ export class WashingtonLicenseChecker {
 
     const sleepChunkMs = 250;
     let remainingMs = delayMs;
+    while (remainingMs > 0) {
+      if (this.options.isCanceled?.()) return;
+      await sleep(Math.min(sleepChunkMs, remainingMs));
+      remainingMs -= sleepChunkMs;
+    }
+  }
+
+  private async pauseForRetry(delayMs: number): Promise<void> {
+    const sleepChunkMs = 250;
+    let remainingMs = Math.max(0, delayMs);
     while (remainingMs > 0) {
       if (this.options.isCanceled?.()) return;
       await sleep(Math.min(sleepChunkMs, remainingMs));

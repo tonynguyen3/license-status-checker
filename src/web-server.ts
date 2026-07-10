@@ -7,7 +7,8 @@ import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
-import { PipelineStore, type WorkerStatus } from "./pipeline-store.js";
+import { PipelineStore } from "./pipeline-store.js";
+import type { WorkerStatus } from "./pipeline-storage.js";
 import { buildOutputPaths } from "./paths.js";
 import type { DurableRunState } from "./run-state.js";
 import { regenerateReportsFromStore, runWashingtonCheck } from "./runner.js";
@@ -51,6 +52,9 @@ interface RunStartOptions {
   worksheet?: string;
   headed: boolean;
   checkDelayMs: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+  retryBackoffMultiplier: number;
   limit?: number;
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
@@ -63,6 +67,9 @@ interface EmailPollConfig {
   worksheet?: string;
   headed: boolean;
   checkDelayMs: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+  retryBackoffMultiplier: number;
   limit?: number;
   baseUrl: string;
 }
@@ -282,6 +289,9 @@ async function handleRun(request: IncomingMessage, response: ServerResponse): Pr
       Number.isFinite(body.checkDelaySeconds) && body.checkDelaySeconds !== undefined && body.checkDelaySeconds >= 0
         ? Math.round(body.checkDelaySeconds * 1000)
         : 1500,
+    retryAttempts: 1,
+    retryDelayMs: 5000,
+    retryBackoffMultiplier: 2,
     limit: Number.isFinite(body.limit) && body.limit && body.limit > 0 ? body.limit : undefined
   }, requestBaseUrl(request));
 
@@ -341,6 +351,9 @@ async function handleResumeRun(sourceRunId: string, request: IncomingMessage, re
     worksheet: sourceState.runOptions?.worksheet,
     headed: sourceState.runOptions?.headed ?? false,
     checkDelayMs: sourceState.runOptions?.checkDelayMs ?? 1500,
+    retryAttempts: sourceState.runOptions?.retryAttempts ?? 1,
+    retryDelayMs: sourceState.runOptions?.retryDelayMs ?? 5000,
+    retryBackoffMultiplier: sourceState.runOptions?.retryBackoffMultiplier ?? 2,
     limit: sourceState.runOptions?.limit,
     resumeAfterLicenseNumber,
     resumedFromRunId: sourceRunId,
@@ -373,6 +386,9 @@ function startRun(upload: UploadedWorkbook, options: RunStartOptions, baseUrl: s
     headed: options.headed,
     slowMo: 0,
     checkDelayMs: options.checkDelayMs,
+    retryAttempts: options.retryAttempts,
+    retryDelayMs: options.retryDelayMs,
+    retryBackoffMultiplier: options.retryBackoffMultiplier,
     limit: options.limit,
     resumeAfterLicenseNumber: options.resumeAfterLicenseNumber,
     resumedFromRunId: options.resumedFromRunId,
@@ -1185,6 +1201,9 @@ async function runScheduledEmailPoll(config: EmailPollConfig): Promise<void> {
         worksheet: config.worksheet,
         headed: config.headed,
         checkDelayMs: config.checkDelayMs,
+        retryAttempts: config.retryAttempts,
+        retryDelayMs: config.retryDelayMs,
+        retryBackoffMultiplier: config.retryBackoffMultiplier,
         limit: config.limit
       },
       config.baseUrl,
@@ -1211,6 +1230,9 @@ function emailPollConfig(): EmailPollConfig {
     : parseBoolean(process.env.EMAIL_POLL_ENABLED);
   const limit = Number(process.env.EMAIL_POLL_LIMIT);
   const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 1500);
+  const retryAttempts = Number(process.env.EMAIL_POLL_WEBSITE_RETRIES ?? 1);
+  const retryDelayMs = Number(process.env.EMAIL_POLL_RETRY_DELAY_MS ?? 5000);
+  const retryBackoffMultiplier = Number(process.env.EMAIL_POLL_RETRY_BACKOFF_MULTIPLIER ?? 2);
 
   return {
     enabled,
@@ -1218,6 +1240,9 @@ function emailPollConfig(): EmailPollConfig {
     worksheet: process.env.EMAIL_POLL_WORKSHEET || undefined,
     headed: parseBoolean(process.env.EMAIL_POLL_HEADED),
     checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 1500,
+    retryAttempts: Number.isFinite(retryAttempts) && retryAttempts >= 0 ? retryAttempts : 1,
+    retryDelayMs: Number.isFinite(retryDelayMs) && retryDelayMs >= 0 ? retryDelayMs : 5000,
+    retryBackoffMultiplier: Number.isFinite(retryBackoffMultiplier) && retryBackoffMultiplier >= 1 ? retryBackoffMultiplier : 2,
     limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
     baseUrl: process.env.EMAIL_BASE_URL ?? `http://localhost:${port}`
   };
@@ -1752,7 +1777,7 @@ function pageHtml(): string {
       } else if (["spreadsheet_complete", "import_complete"].includes(update.type)) {
         setStage(stageImport, "done", "Import", update.message);
         setStage(stageLookup, "pending", "Website Lookup", "Queued work is ready.");
-      } else if (["lookup_started", "checks_started", "checks_progress", "website_check_error"].includes(update.type)) {
+      } else if (["lookup_started", "checks_started", "checks_progress", "website_check_retry", "website_check_error"].includes(update.type)) {
         setStage(stageImport, "done", "Import", "Queued work is ready.");
         setStage(stageLookup, update.type === "website_check_error" ? "active" : "active", "Website Lookup", update.message);
         setStage(stageReports, "pending", "Reports", "Waiting for lookup results.");
@@ -1848,7 +1873,7 @@ function pageHtml(): string {
         stageMetrics.queued = update.total || stageMetrics.queued;
         stageMetrics.remaining = update.remaining ?? stageMetrics.queued;
       }
-      if (["checks_progress", "website_check_error", "rate_limited", "checks_canceled", "checks_complete"].includes(update.type)) {
+      if (["checks_progress", "website_check_retry", "website_check_error", "rate_limited", "checks_canceled", "checks_complete"].includes(update.type)) {
         stageMetrics.checked = update.current ?? stageMetrics.checked;
         stageMetrics.remaining = update.remaining ?? Math.max(0, stageMetrics.queued - stageMetrics.checked);
         stageMetrics.errors = update.errorCount ?? stageMetrics.errors;
