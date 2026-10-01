@@ -12,6 +12,7 @@ The CLI reads an Excel workbook of Washington license holders, checks each licen
 - `expired.txt`
 - `greaterThan90.txt`
 - `exception.txt`
+- `timings.txt`
 
 The bucketing rules match the old app:
 
@@ -40,6 +41,7 @@ license-status-checker/
     expired.txt
     greaterThan90.txt
     exception.txt
+    timings.txt
 ```
 
 The input workbook must be named `ListToCheck.xlsx` unless you pass a custom `--input` path. The default input path is:
@@ -83,6 +85,9 @@ Generated output files are written to the output directory. By default, that is 
 - `expired.txt`: spreadsheet rows skipped before browser checks because the input expiration date is already past.
 - `greaterThan90.txt`: spreadsheet rows skipped before browser checks because the input expiration date is more than 90 days away.
 - `exception.txt`: spreadsheet parsing errors and Playwright/browser errors encountered during the run.
+- `timings.txt`: pipe-delimited per-license timing data for Washington website checks.
+
+`timings.txt` is intended for debugging slow runs and Washington website hiccups. It includes one row per checked license with total duration, HTTP status, the slowest phase, and phase timings for navigation, rate-limit page probing, expiration parsing, active-status lookup, trade lookup, course detection, completed-credit parsing, and course-frequency parsing. Rows with a `hiccup` value are the first ones to inspect; they mark slow total checks, slow navigation, slow page parsing, rate limits, and errors.
 
 Example with explicit paths:
 

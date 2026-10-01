@@ -1,3 +1,6 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { performance } from "node:perf_hooks";
 import { chromium, type Browser, type Page } from "playwright";
 import { daysUntil } from "./date-utils.js";
 import { getHoursNeeded } from "./hours.js";
@@ -17,6 +20,31 @@ class WashingtonRateLimitError extends Error {
     this.name = "WashingtonRateLimitError";
   }
 }
+
+interface LicenseTiming {
+  timestamp: string;
+  licenseNumber: string;
+  outcome: "success" | "error" | "rate_limited";
+  bucket?: string;
+  httpStatus?: number;
+  totalMs: number;
+  navigationMs: number;
+  rateLimitProbeMs: number;
+  expirationMs: number;
+  statusMs: number;
+  tradeMs: number;
+  coursesCountMs: number;
+  creditsMs: number;
+  courseFrequencyMs: number;
+  slowestPhase: string;
+  slowestPhaseMs: number;
+  hiccup: string;
+  message: string;
+}
+
+const TIMING_HICCUP_TOTAL_MS = 10_000;
+const TIMING_HICCUP_NAVIGATION_MS = 8_000;
+const TIMING_HICCUP_PHASE_MS = 5_000;
 
 export class WashingtonLicenseChecker {
   private readonly courseCounts = new Map<string, { courseName: string; courseCode: string; frequency: number }>();
@@ -149,69 +177,141 @@ export class WashingtonLicenseChecker {
   }
 
   private async checkSingleLicense(page: Page, tradesman: Tradesman): Promise<BucketedResult> {
-    const response = await page.goto(
-      `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
-      { waitUntil: "load" }
-    );
+    const startedAt = performance.now();
+    const timing: LicenseTiming = {
+      timestamp: new Date().toISOString(),
+      licenseNumber: tradesman.licenseNumber,
+      outcome: "error",
+      totalMs: 0,
+      navigationMs: 0,
+      rateLimitProbeMs: 0,
+      expirationMs: 0,
+      statusMs: 0,
+      tradeMs: 0,
+      coursesCountMs: 0,
+      creditsMs: 0,
+      courseFrequencyMs: 0,
+      slowestPhase: "",
+      slowestPhaseMs: 0,
+      hiccup: "",
+      message: ""
+    };
 
-    if (!response) {
-      throw new Error(`Washington site did not return an HTTP response for ${tradesman.licenseNumber}.`);
-    }
+    try {
+      const response = await timePhase(timing, "navigationMs", () => page.goto(
+        `https://secure.lni.wa.gov/verify/Detail.aspx?UBI=&LIC=${encodeURIComponent(tradesman.licenseNumber)}&SAW=`,
+        { waitUntil: "load" }
+      ));
 
-    const httpStatus = response.status();
-    if (httpStatus === 429) {
-      throw new WashingtonRateLimitError(
-        `Washington site returned HTTP 429 rate limit for ${tradesman.licenseNumber}.`
-      );
-    }
+      if (!response) {
+        throw new Error(`Washington site did not return an HTTP response for ${tradesman.licenseNumber}.`);
+      }
 
-    if (httpStatus >= 400) {
-      throw new Error(`Washington site returned HTTP ${httpStatus} for ${tradesman.licenseNumber}.`);
-    }
+      const httpStatus = response.status();
+      timing.httpStatus = httpStatus;
+      if (httpStatus === 429) {
+        throw new WashingtonRateLimitError(
+          `Washington site returned HTTP 429 rate limit for ${tradesman.licenseNumber}.`
+        );
+      }
 
-    await this.throwIfRateLimitPage(page, tradesman);
+      if (httpStatus >= 400) {
+        throw new Error(`Washington site returned HTTP ${httpStatus} for ${tradesman.licenseNumber}.`);
+      }
 
-    const expiration = await this.checkExpirationDate(page);
-    if (expiration.days === -1) {
-      return this.doNotSend(tradesman, `${tradesman.licenseNumber} is not a valid license.`);
-    }
+      await timePhase(timing, "rateLimitProbeMs", () => this.throwIfRateLimitPage(page, tradesman));
 
-    if (expiration.days > 90) {
-      tradesman.expirationDate = expiration.date.toLocaleDateString();
-      return this.doNotSend(tradesman, `${tradesman.licenseNumber} has likely already renewed.`);
-    }
+      const expiration = await timePhase(timing, "expirationMs", () => this.checkExpirationDate(page));
+      if (expiration.days === -1) {
+        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} is not a valid license.`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = tradesman.notSendReason ?? "Invalid license.";
+        return result;
+      }
 
-    const status = await page.locator("#StatusDescription strong").innerText({ timeout: 10_000 });
-    if (status.trim() !== "Active") {
-      return this.doNotSend(tradesman, `${tradesman.licenseNumber} is not active.`);
-    }
+      if (expiration.days > 90) {
+        tradesman.expirationDate = expiration.date.toLocaleDateString();
+        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} has likely already renewed.`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = tradesman.notSendReason ?? "Likely renewed.";
+        return result;
+      }
 
-    const trade = (await page.locator("#LicenseType").innerText({ timeout: 10_000 })).trim();
-    tradesman.trade = trade;
-    tradesman.hoursNeeded = getHoursNeeded(trade);
+      const status = await timePhase(timing, "statusMs", () => page.locator("#StatusDescription strong").innerText({ timeout: 10_000 }));
+      if (status.trim() !== "Active") {
+        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} is not active.`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = tradesman.notSendReason ?? "Not active.";
+        return result;
+      }
 
-    const hasCoursesSection = await page.locator("#Courses").count();
-    if (hasCoursesSection === 0) {
+      const trade = (await timePhase(timing, "tradeMs", () => page.locator("#LicenseType").innerText({ timeout: 10_000 }))).trim();
+      tradesman.trade = trade;
+      tradesman.hoursNeeded = getHoursNeeded(trade);
+
+      const hasCoursesSection = await timePhase(timing, "coursesCountMs", () => page.locator("#Courses").count());
+      if (hasCoursesSection === 0) {
+        timing.outcome = "success";
+        timing.bucket = "send";
+        timing.message = "No courses section found; send.";
+        return { bucket: "send", tradesman };
+      }
+
+      const numberOfCredits = await timePhase(timing, "creditsMs", () => this.sumCompletedCredits(page));
+      tradesman.hoursCompleted = numberOfCredits;
+      console.log(`${tradesman.licenseNumber} has completed ${tradesman.hoursCompleted} credits and needs ${tradesman.hoursNeeded}`);
+
+      if (numberOfCredits > 0) {
+        await timePhase(timing, "courseFrequencyMs", () => this.recordCourseFrequencies(page));
+      }
+
+      if ((tradesman.hoursNeeded ?? 0) <= numberOfCredits) {
+        const result = this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has enough credits.`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = tradesman.notSendReason ?? "Enough credits.";
+        return result;
+      }
+
+      if (numberOfCredits > 0) {
+        const result = this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has some credits already.`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = tradesman.notSendReason ?? "Some credits already.";
+        return result;
+      }
+
+      timing.outcome = "success";
+      timing.bucket = "send";
+      timing.message = "No completed credits; send.";
       return { bucket: "send", tradesman };
+    } catch (error) {
+      timing.outcome = error instanceof WashingtonRateLimitError ? "rate_limited" : "error";
+      timing.message = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      timing.totalMs = roundedMs(performance.now() - startedAt);
+      const slowest = slowestTimingPhase(timing);
+      timing.slowestPhase = slowest.phase;
+      timing.slowestPhaseMs = slowest.ms;
+      timing.hiccup = timingHiccup(timing);
+      await this.writeTiming(timing);
+      if (timing.hiccup) {
+        this.options.onProgress?.({
+          type: "timing_hiccup",
+          message: `Timing hiccup for ${tradesman.licenseNumber}: ${timing.totalMs} ms total; slowest phase ${timing.slowestPhase} ${timing.slowestPhaseMs} ms. ${timing.hiccup}`,
+          licenseNumber: tradesman.licenseNumber
+        });
+      }
     }
+  }
 
-    const numberOfCredits = await this.sumCompletedCredits(page);
-    tradesman.hoursCompleted = numberOfCredits;
-    console.log(`${tradesman.licenseNumber} has completed ${tradesman.hoursCompleted} credits and needs ${tradesman.hoursNeeded}`);
-
-    if (numberOfCredits > 0) {
-      await this.recordCourseFrequencies(page);
-    }
-
-    if ((tradesman.hoursNeeded ?? 0) <= numberOfCredits) {
-      return this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has enough credits.`);
-    }
-
-    if (numberOfCredits > 0) {
-      return this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has some credits already.`);
-    }
-
-    return { bucket: "send", tradesman };
+  private async writeTiming(timing: LicenseTiming): Promise<void> {
+    await mkdir(dirname(this.outputPaths.timingLogPath), { recursive: true });
+    await appendFile(this.outputPaths.timingLogPath, `${timingLine(timing)}\n`, "utf8");
   }
 
   private async pauseBetweenChecks(): Promise<void> {
@@ -343,4 +443,96 @@ async function closeBrowser(browser: Browser): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function timePhase<T>(
+  timing: LicenseTiming,
+  key: keyof Pick<
+    LicenseTiming,
+    | "navigationMs"
+    | "rateLimitProbeMs"
+    | "expirationMs"
+    | "statusMs"
+    | "tradeMs"
+    | "coursesCountMs"
+    | "creditsMs"
+    | "courseFrequencyMs"
+  >,
+  action: () => Promise<T>
+): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await action();
+  } finally {
+    timing[key] += roundedMs(performance.now() - startedAt);
+  }
+}
+
+function slowestTimingPhase(timing: LicenseTiming): { phase: string; ms: number } {
+  const phases = [
+    ["navigation", timing.navigationMs],
+    ["rateLimitProbe", timing.rateLimitProbeMs],
+    ["expiration", timing.expirationMs],
+    ["status", timing.statusMs],
+    ["trade", timing.tradeMs],
+    ["coursesCount", timing.coursesCountMs],
+    ["credits", timing.creditsMs],
+    ["courseFrequency", timing.courseFrequencyMs]
+  ] as const;
+
+  return phases.reduce(
+    (slowest, [phase, ms]) => ms > slowest.ms ? { phase, ms } : slowest,
+    { phase: "none", ms: 0 }
+  );
+}
+
+function timingHiccup(timing: LicenseTiming): string {
+  const reasons: string[] = [];
+  if (timing.totalMs >= TIMING_HICCUP_TOTAL_MS) {
+    reasons.push(`total >= ${TIMING_HICCUP_TOTAL_MS} ms`);
+  }
+  if (timing.navigationMs >= TIMING_HICCUP_NAVIGATION_MS) {
+    reasons.push(`navigation >= ${TIMING_HICCUP_NAVIGATION_MS} ms`);
+  }
+  if (timing.slowestPhaseMs >= TIMING_HICCUP_PHASE_MS) {
+    reasons.push(`${timing.slowestPhase} >= ${TIMING_HICCUP_PHASE_MS} ms`);
+  }
+  if (timing.outcome !== "success") {
+    reasons.push(`outcome=${timing.outcome}`);
+  }
+  return reasons.join("; ");
+}
+
+function timingLine(timing: LicenseTiming): string {
+  return [
+    timing.timestamp,
+    timing.licenseNumber,
+    timing.outcome,
+    timing.bucket ?? "",
+    timing.httpStatus ?? "",
+    timing.totalMs,
+    timing.navigationMs,
+    timing.rateLimitProbeMs,
+    timing.expirationMs,
+    timing.statusMs,
+    timing.tradeMs,
+    timing.coursesCountMs,
+    timing.creditsMs,
+    timing.courseFrequencyMs,
+    timing.slowestPhase,
+    timing.slowestPhaseMs,
+    timing.hiccup,
+    timing.message
+  ].map(formatTimingField).join("|");
+}
+
+function formatTimingField(value: unknown): string {
+  return String(value)
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "/")
+    .trim();
+}
+
+function roundedMs(value: number): number {
+  return Math.round(value);
 }

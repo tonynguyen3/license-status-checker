@@ -1,5 +1,6 @@
-import { appendFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { Logger } from "./logger.js";
 import { buildOutputPaths } from "./paths.js";
 import { readWashingtonSpreadsheet, writeCourseFrequencies, writeTradesmenWorkbook } from "./spreadsheet.js";
@@ -35,6 +36,7 @@ export async function runWashingtonCheck(options: RunOptions): Promise<RunResult
   }
 
   logger.logStart();
+  await initializeTimingLog(outputPaths);
 
   const tradesmen = await readWashingtonSpreadsheet(options.input, logger, outputPaths, {
     worksheetName: options.worksheet,
@@ -85,8 +87,37 @@ async function ensureLogFiles(outputPaths: OutputPaths): Promise<void> {
   await Promise.all([
     appendFile(outputPaths.expiredLogPath, "", "utf8"),
     ensureLogMessage(outputPaths.greaterThan90LogPath, "No entries greater than 90 days.\n"),
-    ensureLogMessage(outputPaths.exceptionLogPath, "There were no exceptions.\n")
+    ensureLogMessage(outputPaths.exceptionLogPath, "There were no exceptions.\n"),
+    appendFile(outputPaths.timingLogPath, "", "utf8")
   ]);
+}
+
+async function initializeTimingLog(outputPaths: OutputPaths): Promise<void> {
+  await mkdir(dirname(outputPaths.timingLogPath), { recursive: true });
+  await writeFile(
+    outputPaths.timingLogPath,
+    [
+      "timestamp",
+      "licenseNumber",
+      "outcome",
+      "bucket",
+      "httpStatus",
+      "totalMs",
+      "navigationMs",
+      "rateLimitProbeMs",
+      "expirationMs",
+      "statusMs",
+      "tradeMs",
+      "coursesCountMs",
+      "creditsMs",
+      "courseFrequencyMs",
+      "slowestPhase",
+      "slowestPhaseMs",
+      "hiccup",
+      "message"
+    ].join("|") + "\n",
+    "utf8"
+  );
 }
 
 async function ensureLogMessage(path: string, message: string): Promise<void> {

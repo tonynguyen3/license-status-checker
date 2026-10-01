@@ -12,6 +12,7 @@ export function buildOutputPaths(outDir: string, date = new Date()): OutputPaths
     coursesAlreadyTakenPath: resolve(base, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: resolve(base, "expired.txt"),
     greaterThan90LogPath: resolve(base, "greaterThan90.txt"),
-    exceptionLogPath: resolve(base, "exception.txt")
+    exceptionLogPath: resolve(base, "exception.txt"),
+    timingLogPath: resolve(base, "timings.txt")
   };
 }

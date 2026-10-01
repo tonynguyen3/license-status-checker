@@ -523,7 +523,8 @@ function pathForFileKey(outputPaths: OutputPaths, fileKey: string): string | und
     coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
     expired: outputPaths.expiredLogPath,
     greaterThan90: outputPaths.greaterThan90LogPath,
-    exception: outputPaths.exceptionLogPath
+    exception: outputPaths.exceptionLogPath,
+    timings: outputPaths.timingLogPath
   };
   return files[fileKey];
 }
@@ -548,7 +549,8 @@ async function outputPathsForRun(runId: string): Promise<OutputPaths | undefined
     coursesAlreadyTakenPath: join(outputDir, "coursesAlreadyTaken.xlsx"),
     expiredLogPath: join(outputDir, "expired.txt"),
     greaterThan90LogPath: join(outputDir, "greaterThan90.txt"),
-    exceptionLogPath: join(outputDir, "exception.txt")
+    exceptionLogPath: join(outputDir, "exception.txt"),
+    timingLogPath: join(outputDir, "timings.txt")
   };
 }
 
@@ -604,7 +606,8 @@ function fileLinks(runId: string, outputPaths: OutputPaths): Record<string, stri
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
-      exception: outputPaths.exceptionLogPath
+      exception: outputPaths.exceptionLogPath,
+      timings: outputPaths.timingLogPath
     }).map(([key]) => [key, `/runs/${runId}/files/${key}`])
   );
 }
@@ -617,7 +620,8 @@ function previousRunFileLinks(runId: string, outputPaths: OutputPaths): Record<s
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
-      exception: outputPaths.exceptionLogPath
+      exception: outputPaths.exceptionLogPath,
+      timings: outputPaths.timingLogPath
     }).map(([key, path]) => [key, { href: `/runs/${runId}/files/${key}`, label: basename(path) }])
   );
 }
@@ -1167,7 +1171,8 @@ function pageHtml(): string {
         coursesAlreadyTaken: "Course frequency workbook",
         expired: "Expired log",
         greaterThan90: "Greater-than-90 log",
-        exception: "Exception log"
+        exception: "Exception log",
+        timings: "Timing log"
       };
       files.innerHTML = "";
       for (const [key, href] of Object.entries(fileLinks)) {
