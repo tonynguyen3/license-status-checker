@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename, dirname, extname, resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
+import { EmailPollScheduler } from "./web-email-poll.js";
 import { pageHtml, runsHtml } from "./web-pages.js";
 import { WebRunManager, writeSseEvent } from "./web-runs.js";
 
@@ -14,33 +15,7 @@ const rootDir = resolve("Files", "web-runs");
 const emailPollLogPath = resolve("Files", "email-poll.log");
 const appIconPath = resolve("docs", "license-status-checker-icon.png");
 const webRuns = new WebRunManager(rootDir);
-const emailPollState: EmailPollStatus = {
-  enabled: false,
-  running: false,
-  logPath: emailPollLogPath
-};
-let emailPollTimer: ReturnType<typeof setTimeout> | undefined;
-
-interface EmailPollConfig {
-  enabled: boolean;
-  time?: string;
-  worksheet?: string;
-  headed: boolean;
-  checkDelayMs: number;
-  limit?: number;
-  baseUrl: string;
-}
-
-interface EmailPollStatus {
-  enabled: boolean;
-  scheduledTime?: string;
-  nextCheckAt?: string;
-  lastCheckedAt?: string;
-  lastResult?: string;
-  lastRunId?: string;
-  running: boolean;
-  logPath: string;
-}
+const emailPoll = new EmailPollScheduler({ logPath: emailPollLogPath, port, webRuns });
 
 const server = createServer(async (request, response) => {
   try {
@@ -72,7 +47,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/email-poll/status") {
-      sendJson(response, 200, emailPollState);
+      sendJson(response, 200, emailPoll.status());
       return;
     }
 
@@ -123,7 +98,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`Web interface running at http://localhost:${port}`);
-  startEmailPollScheduler();
+  emailPoll.startFromEnvironment();
 });
 
 async function handleUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -279,16 +254,16 @@ async function handleRunsPage(response: ServerResponse): Promise<void> {
 async function handleEnableEmailPoll(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const bodyText = (await readRequestBody(request)).toString("utf8").trim();
   const body = bodyText ? JSON.parse(bodyText) as { time?: string } : {};
-  const config = emailPollConfig();
+  const config = emailPoll.config();
   config.enabled = true;
   config.time = body.time?.trim() || config.time;
-  const result = await enableEmailPolling(config);
-  sendJson(response, result.ok ? 200 : 400, result.ok ? emailPollState : { error: result.error, status: emailPollState });
+  const result = await emailPoll.enable(config);
+  sendJson(response, result.ok ? 200 : 400, result.ok ? emailPoll.status() : { error: result.error, status: emailPoll.status() });
 }
 
 async function handleDisableEmailPoll(response: ServerResponse): Promise<void> {
-  await disableEmailPolling("Scheduled email polling disabled from the web UI.");
-  sendJson(response, 200, emailPollState);
+  await emailPoll.disable("Scheduled email polling disabled from the web UI.");
+  sendJson(response, 200, emailPoll.status());
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
@@ -365,177 +340,4 @@ function requestBaseUrl(request: IncomingMessage): string {
   const forwardedProto = request.headers["x-forwarded-proto"];
   const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
   return `${proto ?? "http"}://${host}`;
-}
-
-function startEmailPollScheduler(): void {
-  const config = emailPollConfig();
-
-  if (!config.enabled) {
-    emailPollState.enabled = false;
-    emailPollState.scheduledTime = config.time;
-    void logEmailPoll("Scheduled email polling is disabled.");
-    return;
-  }
-
-  void enableEmailPolling(config);
-}
-
-async function enableEmailPolling(config = { ...emailPollConfig(), enabled: true }): Promise<{ ok: true } | { ok: false; error: string }> {
-  stopEmailPollTimer();
-  emailPollState.enabled = true;
-  emailPollState.scheduledTime = config.time;
-  emailPollState.nextCheckAt = undefined;
-
-  if (!imapConfigured()) {
-    emailPollState.enabled = false;
-    emailPollState.lastResult = "IMAP settings are not configured.";
-    await logEmailPoll("Scheduled email polling is enabled, but IMAP settings are not configured.");
-    return { ok: false, error: emailPollState.lastResult };
-  }
-
-  if (!config.time) {
-    emailPollState.enabled = false;
-    emailPollState.lastResult = "EMAIL_POLL_TIME is not configured.";
-    await logEmailPoll("Scheduled email polling is enabled, but EMAIL_POLL_TIME is not configured.");
-    return { ok: false, error: emailPollState.lastResult };
-  }
-
-  try {
-    scheduleNextEmailPoll(config);
-    emailPollState.lastResult = `Scheduled email polling enabled for ${config.time}.`;
-    await logEmailPoll(emailPollState.lastResult);
-    return { ok: true };
-  } catch (error) {
-    emailPollState.enabled = false;
-    emailPollState.lastResult = error instanceof Error ? error.message : String(error);
-    await logEmailPoll(emailPollState.lastResult);
-    return { ok: false, error: emailPollState.lastResult };
-  }
-}
-
-function scheduleNextEmailPoll(config: EmailPollConfig): void {
-  if (!config.time) return;
-
-  stopEmailPollTimer();
-  const nextCheck = nextDailyCheckAt(config.time);
-  emailPollState.nextCheckAt = nextCheck.toISOString();
-  const delayMs = Math.max(0, nextCheck.getTime() - Date.now());
-  emailPollTimer = setTimeout(() => {
-    void runScheduledEmailPoll(config).finally(() => {
-      if (emailPollState.enabled) {
-        scheduleNextEmailPoll(config);
-      }
-    });
-  }, delayMs);
-}
-
-async function disableEmailPolling(message: string): Promise<void> {
-  stopEmailPollTimer();
-  emailPollState.enabled = false;
-  emailPollState.nextCheckAt = undefined;
-  emailPollState.lastResult = message;
-  await logEmailPoll(message);
-}
-
-function stopEmailPollTimer(): void {
-  if (!emailPollTimer) return;
-  clearTimeout(emailPollTimer);
-  emailPollTimer = undefined;
-}
-
-async function runScheduledEmailPoll(config: EmailPollConfig): Promise<void> {
-  if (emailPollState.running) return;
-
-  emailPollState.running = true;
-  emailPollState.lastCheckedAt = new Date().toISOString();
-  await logEmailPoll(`Checking email for input workbook at scheduled time ${config.time}.`);
-
-  try {
-    if (webRuns.activeRunExists()) {
-      emailPollState.lastResult = "Skipped because a run is already active.";
-      await logEmailPoll(emailPollState.lastResult);
-      return;
-    }
-
-    const workbook = await findInputWorkbookEmail();
-    if (!workbook) {
-      emailPollState.lastResult = "No matching unread email input workbook found.";
-      await logEmailPoll(emailPollState.lastResult);
-      return;
-    }
-
-    const uploaded = await webRuns.saveUploadedWorkbook(workbook.filename, workbook.content);
-    const run = webRuns.startRun(
-      uploaded,
-      {
-        worksheet: config.worksheet,
-        headed: config.headed,
-        checkDelayMs: config.checkDelayMs,
-        limit: config.limit
-      },
-      config.baseUrl,
-      (finishedRun) => {
-        void logEmailPoll(`Run ${finishedRun.id} finished with status ${finishedRun.status}.`);
-      }
-    );
-
-    emailPollState.lastRunId = run.id;
-    emailPollState.lastResult = `Found ${workbook.filename} and started run ${run.id}.`;
-    await logEmailPoll(`${emailPollState.lastResult} Subject: ${workbook.subject ?? "(no subject)"}.`);
-  } catch (error) {
-    emailPollState.lastResult = `Email poll failed: ${error instanceof Error ? error.message : String(error)}`;
-    await logEmailPoll(emailPollState.lastResult);
-  } finally {
-    emailPollState.running = false;
-  }
-}
-
-function emailPollConfig(): EmailPollConfig {
-  const time = process.env.EMAIL_POLL_TIME?.trim();
-  const enabled = process.env.EMAIL_POLL_ENABLED === undefined
-    ? Boolean(time)
-    : parseBoolean(process.env.EMAIL_POLL_ENABLED);
-  const limit = Number(process.env.EMAIL_POLL_LIMIT);
-  const checkDelayMs = Number(process.env.EMAIL_POLL_CHECK_DELAY_MS ?? 3000);
-
-  return {
-    enabled,
-    time,
-    worksheet: process.env.EMAIL_POLL_WORKSHEET || undefined,
-    headed: parseBoolean(process.env.EMAIL_POLL_HEADED),
-    checkDelayMs: Number.isFinite(checkDelayMs) && checkDelayMs >= 0 ? checkDelayMs : 3000,
-    limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
-    baseUrl: process.env.EMAIL_BASE_URL ?? `http://localhost:${port}`
-  };
-}
-
-function nextDailyCheckAt(time: string, now = new Date()): Date {
-  const match = time.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) {
-    throw new Error(`EMAIL_POLL_TIME must use HH:MM format, got: ${time}`);
-  }
-
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours > 23 || minutes > 59) {
-    throw new Error(`EMAIL_POLL_TIME must use HH:MM format, got: ${time}`);
-  }
-
-  const next = new Date(now);
-  next.setHours(hours, minutes, 0, 0);
-  if (next <= now) {
-    next.setDate(next.getDate() + 1);
-  }
-  return next;
-}
-
-async function logEmailPoll(message: string): Promise<void> {
-  await mkdir(dirname(emailPollLogPath), { recursive: true });
-  const line = `${new Date().toLocaleString()} ${message}\n`;
-  await appendFile(emailPollLogPath, line, "utf8");
-  console.log(`[email-poll] ${message}`);
-}
-
-function parseBoolean(value: string | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
