@@ -15,7 +15,7 @@ export function pageHtml(): string {
     h1 { font-size:20px; margin:0; font-weight:700; color:var(--accent-strong); }
     .brand { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
-    main { display:grid; grid-template-columns: 360px 1fr; min-height:calc(100vh - 65px); }
+    main { display:grid; grid-template-columns: 390px 1fr; min-height:calc(100vh - 65px); }
     aside { border-right:1px solid var(--line); padding:20px; background:var(--panel); }
     section { padding:20px 24px; }
     label { display:block; font-size:13px; font-weight:700; margin:18px 0 6px; }
@@ -31,6 +31,17 @@ export function pageHtml(): string {
     .toolbar h2 { margin:0; }
     .toolbar label { margin:0; font-weight:400; }
     .stack { display:grid; gap:12px; }
+    .workflow { display:grid; gap:14px; }
+    .stage { border:1px solid var(--line); border-radius:6px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.03); }
+    .stage-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+    .stage-number { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; flex:0 0 auto; background:var(--accent); color:#fff; font-size:13px; font-weight:700; }
+    .stage-title { min-width:0; }
+    .stage-title h2 { margin:0; font-size:15px; color:var(--accent-strong); }
+    .stage-title p { margin:2px 0 0; color:var(--muted); font-size:12px; line-height:1.35; }
+    .stage-body { display:grid; gap:10px; }
+    .stage-body label:first-child { margin-top:0; }
+    .stage-body button { width:100%; }
+    .inline-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
     .meta { color:var(--muted); font-size:13px; line-height:1.4; }
     .progress { margin:0 0 18px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
@@ -53,7 +64,9 @@ export function pageHtml(): string {
     .status-actions { display:flex; gap:8px; margin-top:10px; }
     .status-actions button { flex:1; }
     button.secondary { background:#5f6368; }
-    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } }
+    .run-surface { display:grid; grid-template-rows:auto auto 1fr auto auto; min-height:calc(100vh - 65px); }
+    .results-heading { margin-top:20px; }
+    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { grid-template-columns:1fr; } .run-surface { min-height:auto; } }
   </style>
 </head>
 <body>
@@ -65,34 +78,67 @@ export function pageHtml(): string {
     <div class="meta"><a href="/runs">Previous Runs</a> · <span id="status">Upload a workbook to begin.</span></div>
   </header>
   <main>
-    <aside>
-      <div class="stack">
-        <div>
+    <aside class="workflow">
+      <div class="stage">
+        <div class="stage-header">
+          <div class="stage-number">1</div>
+          <div class="stage-title">
+            <h2>Input</h2>
+            <p>Upload a workbook or pull the next matching attachment from email.</p>
+          </div>
+        </div>
+        <div class="stage-body">
           <label for="file">Input workbook</label>
           <input id="file" type="file" accept=".xlsx">
+          <div class="inline-buttons">
+            <button id="upload">Upload Input File</button>
+            <button id="checkEmail">Check Email</button>
+          </div>
+          <div class="meta" id="uploadMeta"></div>
         </div>
-        <button id="upload">Upload Input File</button>
-        <button id="checkEmail">Check Email for Input File</button>
-        <div class="meta" id="uploadMeta"></div>
-        <div>
+      </div>
+      <div class="stage">
+        <div class="stage-header">
+          <div class="stage-number">2</div>
+          <div class="stage-title">
+            <h2>Configure</h2>
+            <p>Choose the worksheet, row limit, delay, and local browser debug mode.</p>
+          </div>
+        </div>
+        <div class="stage-body">
           <label for="worksheet">Worksheet</label>
           <select id="worksheet" disabled>
-            <option value="">All worksheets</option>
+            <option value="">All supported worksheets</option>
           </select>
-        </div>
-        <div>
           <label for="limit">Website check limit</label>
           <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
-        </div>
-        <div>
           <label for="checkDelay">Pause between website checks</label>
           <input id="checkDelay" type="number" min="0" step="0.5" value="3">
+          <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
         </div>
-        <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
-        <button id="run" disabled>Run Check</button>
-        <button id="stop" class="danger" disabled>Stop Run</button>
+      </div>
+      <div class="stage">
+        <div class="stage-header">
+          <div class="stage-number">3</div>
+          <div class="stage-title">
+            <h2>Run</h2>
+            <p>Start the website checks, or stop after the current license finishes.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <button id="run" disabled>Run Check</button>
+          <button id="stop" class="danger" disabled>Stop Run</button>
+        </div>
+      </div>
+      <div class="stage">
+        <div class="stage-header">
+          <div class="stage-number">4</div>
+          <div class="stage-title">
+            <h2>Email Polling</h2>
+            <p>Schedule a daily check for new input files.</p>
+          </div>
+        </div>
         <div class="status-box">
-          <h2>Email Polling</h2>
           <dl>
             <dt>Status</dt><dd id="emailPollEnabled">Loading</dd>
             <dt>Poll time</dt><dd><input id="emailPollTime" type="time"></dd>
@@ -107,7 +153,7 @@ export function pageHtml(): string {
         </div>
       </div>
     </aside>
-    <section>
+    <section class="run-surface">
       <div class="progress"><div class="bar" id="bar"></div></div>
       <div class="meta" id="progressMeta">No run started.</div>
       <div class="toolbar">
@@ -115,7 +161,7 @@ export function pageHtml(): string {
         <label class="row"><input id="autoScroll" type="checkbox" checked> Auto-scroll while running</label>
       </div>
       <div class="feed" id="feed"></div>
-      <h2>Output Files</h2>
+      <h2 class="results-heading">Output Files</h2>
       <div class="files" id="files"></div>
     </section>
   </main>
@@ -405,117 +451,4 @@ export function pageHtml(): string {
   </script>
 </body>
 </html>`;
-}
-
-export interface FileLink {
-  href: string;
-  label: string;
-}
-
-export function runsHtml(runSummaries: Array<{ id: string; createdAt: string; files: Record<string, FileLink> }>): string {
-  const rows = runSummaries.map((run) => `
-    <section class="run" data-run="${escapeHtml(run.id)}">
-      <div>
-        <h2>${escapeHtml(run.id)}</h2>
-        <p>${escapeHtml(run.createdAt)}</p>
-      </div>
-      <div class="run-actions">
-        <div class="links">
-          ${runFileLink(run.files.send)}
-          ${runFileLink(run.files.doNotSend)}
-          ${runFileLink(run.files.coursesAlreadyTaken)}
-          ${runFileLink(run.files.expired)}
-          ${runFileLink(run.files.greaterThan90)}
-          ${runFileLink(run.files.exception)}
-          ${runFileLink(run.files.timings)}
-        </div>
-        <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
-      </div>
-    </section>
-  `).join("");
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/png" href="/app-icon.png">
-  <link rel="apple-touch-icon" href="/app-icon.png">
-  <title>Previous Runs</title>
-  <style>
-    :root { color-scheme: light; --ink:#10233f; --muted:#5d6673; --line:#cfd8d3; --panel:#f4faf6; --accent:#005f3c; --accent-strong:#00345f; --danger:#b3261e; --gold:#f6be00; }
-    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fbfdfb; }
-    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
-    h1 { font-size:20px; margin:0; color:var(--accent-strong); }
-    main { max-width:1100px; margin:0 auto; padding:20px 24px; }
-    a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
-    .brand { display:flex; align-items:center; gap:12px; min-width:0; }
-    .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
-    .run { border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; background:#fff; }
-    h2 { font-size:16px; margin:0 0 4px; }
-    p { margin:0; color:var(--muted); font-size:13px; }
-    button { border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); font:inherit; font-weight:700; padding:8px 10px; cursor:pointer; }
-    button:hover { background:var(--panel); border-color:var(--gold); }
-    .delete-run { color:var(--danger); }
-    .delete-run:disabled { cursor:not-allowed; opacity:.65; }
-    .run-actions { display:flex; align-items:center; justify-content:flex-end; gap:14px; }
-    .links { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; }
-    .empty { color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:18px; background:#fff; }
-    @media (max-width: 760px) { .run { display:block; } .run-actions { align-items:flex-start; flex-direction:column; margin-top:12px; } .links { justify-content:flex-start; } }
-  </style>
-</head>
-<body>
-  <header>
-    <div class="brand">
-      <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true">
-      <h1>Previous Runs</h1>
-    </div>
-    <a href="/">New Run</a>
-  </header>
-  <main>
-    ${rows || '<div class="empty">No completed runs found yet.</div>'}
-  </main>
-  <script>
-    document.querySelectorAll(".delete-run").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const runId = button.dataset.runId;
-        if (!runId) return;
-        if (!confirm("Delete run " + runId + " and remove its folder from disk?")) return;
-
-        button.disabled = true;
-        button.textContent = "Deleting...";
-
-        try {
-          const response = await fetch("/runs/" + encodeURIComponent(runId) + "/delete", { method: "POST" });
-          const result = await response.json();
-          if (!response.ok) {
-            throw new Error(result.error || "Could not delete run.");
-          }
-
-          button.closest(".run")?.remove();
-          if (!document.querySelector(".run")) {
-            document.querySelector("main").innerHTML = '<div class="empty">No completed runs found yet.</div>';
-          }
-        } catch (error) {
-          alert(error instanceof Error ? error.message : String(error));
-          button.disabled = false;
-          button.textContent = "Delete";
-        }
-      });
-    });
-  </script>
-</body>
-</html>`;
-}
-
-function runFileLink(file: FileLink | undefined): string {
-  return file ? `<a href="${file.href}">${escapeHtml(file.label)}</a>` : "";
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

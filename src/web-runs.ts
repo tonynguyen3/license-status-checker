@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import { emailConfigured, emailRunResults } from "./email.js";
 import { runWashingtonCheck } from "./runner.js";
 import type { OutputPaths, ProgressUpdate } from "./types.js";
-import type { FileLink } from "./web-pages.js";
+import type { FileLink } from "./web-page-types.js";
 
 export interface UploadedWorkbook {
   id: string;

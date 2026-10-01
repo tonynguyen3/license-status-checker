@@ -5,8 +5,9 @@ import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { EmailPollScheduler } from "./web-email-poll.js";
 import { parseMultipartFile, readRequestBody, sendFile, sendHtml, sendJson } from "./web-http.js";
-import { pageHtml, runsHtml } from "./web-pages.js";
+import { pageHtml } from "./web-pages.js";
 import { WebRunManager, writeSseEvent } from "./web-runs.js";
+import { runsHtml } from "./web-runs-page.js";
 
 loadEnvFile();
 
