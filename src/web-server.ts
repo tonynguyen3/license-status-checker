@@ -1,10 +1,10 @@
-import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename, extname, resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { EmailPollScheduler } from "./web-email-poll.js";
+import { parseMultipartFile, readRequestBody, sendFile, sendHtml, sendJson } from "./web-http.js";
 import { pageHtml, runsHtml } from "./web-pages.js";
 import { WebRunManager, writeSseEvent } from "./web-runs.js";
 
@@ -221,11 +221,10 @@ async function handleFile(runId: string, fileKey: string, response: ServerRespon
   }
 
   const isText = extname(path).toLowerCase() === ".txt";
-  response.writeHead(200, {
-    "Content-Type": isText ? "text/plain; charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "Content-Disposition": `${download ? "attachment" : "inline"}; filename="${basename(path)}"`
+  await sendFile(response, path, {
+    contentType: isText ? "text/plain; charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    disposition: download ? "attachment" : "inline"
   });
-  createReadStream(path).pipe(response);
 }
 
 async function handleDeleteRun(runId: string, response: ServerResponse): Promise<void> {
@@ -266,73 +265,14 @@ async function handleDisableEmailPoll(response: ServerResponse): Promise<void> {
   sendJson(response, 200, emailPoll.status());
 }
 
-async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
-
-function parseMultipartFile(body: Buffer, boundary: string): { filename: string; data: Buffer } | undefined {
-  const delimiter = Buffer.from(`--${boundary}`);
-  let offset = 0;
-
-  while (offset < body.length) {
-    const start = body.indexOf(delimiter, offset);
-    if (start === -1) break;
-
-    const headerStart = start + delimiter.length + 2;
-    const headerEnd = body.indexOf(Buffer.from("\r\n\r\n"), headerStart);
-    if (headerEnd === -1) break;
-
-    const headers = body.slice(headerStart, headerEnd).toString("utf8");
-    const filenameMatch = headers.match(/filename="([^"]+)"/);
-    const dataStart = headerEnd + 4;
-    const next = body.indexOf(delimiter, dataStart);
-    if (next === -1) break;
-
-    if (filenameMatch) {
-      const dataEnd = next - 2;
-      return {
-        filename: basename(filenameMatch[1]),
-        data: body.slice(dataStart, dataEnd)
-      };
-    }
-
-    offset = next;
-  }
-
-  return undefined;
-}
-
-function sendJson(response: ServerResponse, status: number, payload: unknown): void {
-  response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(payload));
-}
-
-function sendHtml(response: ServerResponse, html: string): void {
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  response.end(html);
-}
-
 async function sendPngFile(response: ServerResponse, path: string): Promise<void> {
-  try {
-    const fileStat = await stat(path);
-    if (!fileStat.isFile()) {
-      sendJson(response, 404, { error: "File not found." });
-      return;
-    }
-  } catch {
-    sendJson(response, 404, { error: "File not found." });
-    return;
-  }
-
-  response.writeHead(200, {
-    "Content-Type": "image/png",
-    "Cache-Control": "public, max-age=3600"
+  const sent = await sendFile(response, path, {
+    contentType: "image/png",
+    cacheControl: "public, max-age=3600"
   });
-  createReadStream(path).pipe(response);
+  if (!sent) {
+    sendJson(response, 404, { error: "File not found." });
+  }
 }
 
 function requestBaseUrl(request: IncomingMessage): string {
