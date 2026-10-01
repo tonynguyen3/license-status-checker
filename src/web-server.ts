@@ -9,9 +9,9 @@ import { emailConfigured, emailRunResults } from "./email.js";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { PipelineStore } from "./pipeline-store.js";
-import type { WorkerStatus } from "./pipeline-storage.js";
+import type { LookupResultRecord, WorkerStatus } from "./pipeline-storage.js";
 import { buildOutputPaths } from "./paths.js";
-import { ReportRepository, type LookupResultFilter } from "./report-repository.js";
+import { ReportRepository, type LookupResultFilter, type RunReportSummary } from "./report-repository.js";
 import type { DurableRunState } from "./run-state.js";
 import { regenerateReportsFromStore, runWashingtonCheck } from "./runner.js";
 import { readTradesmenWorkbook, writeTradesmenWorkbook } from "./spreadsheet.js";
@@ -19,7 +19,7 @@ import type { OutputPaths, ProgressUpdate } from "./types.js";
 
 loadEnvFile();
 
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 3001);
 const rootDir = resolve("Files", "web-runs");
 const artifactStore = new FilesystemArtifactStore(rootDir);
 const emailPollLogPath = resolve("Files", "email-poll.log");
@@ -613,14 +613,30 @@ async function handleRunReport(runId: string, url: URL, response: ServerResponse
   const filter = reportFilterFromSearchParams(url.searchParams);
   const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") ?? 100)));
   const results = await reports.listResults(filter);
-  sendJson(response, 200, {
+  const summary = await reports.summary(filter);
+  const payload = {
     runId,
     filter,
-    summary: await reports.summary(filter),
+    summary,
     results: results.slice(0, limit),
     limit,
     returned: Math.min(results.length, limit)
-  });
+  };
+
+  if (url.searchParams.get("format") === "json") {
+    sendJson(response, 200, payload);
+    return;
+  }
+
+  sendHtml(response, reportHtml({
+    runId,
+    filter,
+    summary,
+    allSummary: await reports.summary(),
+    results: payload.results,
+    totalMatches: results.length,
+    limit
+  }));
 }
 
 async function handleRegenerateReports(runId: string, response: ServerResponse): Promise<void> {
@@ -1960,6 +1976,195 @@ interface PreviousRunStateSummary {
   resumeAfterLicenseNumber?: string;
   resumedFromRunId?: string;
   workerStatus?: WorkerStatus;
+}
+
+interface ReportPageModel {
+  runId: string;
+  filter: LookupResultFilter;
+  summary: RunReportSummary;
+  allSummary: RunReportSummary;
+  results: LookupResultRecord[];
+  totalMatches: number;
+  limit: number;
+}
+
+function reportHtml(model: ReportPageModel): string {
+  const query = reportQuery(model.filter, model.limit);
+  const jsonHref = `/runs/${encodeURIComponent(model.runId)}/report?${query}${query ? "&" : ""}format=json`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="apple-touch-icon" href="/app-icon.png">
+  <title>Run Report ${escapeHtml(model.runId)}</title>
+  <style>
+    :root { color-scheme: light; --ink:#10233f; --muted:#5d6673; --line:#cfd8d3; --panel:#f4faf6; --accent:#005f3c; --accent-strong:#00345f; --danger:#b3261e; --gold:#f6be00; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Arial, Helvetica, sans-serif; color:var(--ink); background:#fbfdfb; }
+    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
+    h1 { font-size:20px; margin:0; color:var(--accent-strong); }
+    main { max-width:1240px; margin:0 auto; padding:20px 24px; }
+    a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
+    .brand { display:flex; align-items:center; gap:12px; min-width:0; }
+    .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
+    .meta { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
+    .summary { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; margin:0 0 16px; }
+    .metric { border:1px solid var(--line); border-radius:6px; background:#fff; padding:12px; }
+    .metric span { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
+    .metric strong { display:block; font-size:22px; color:var(--accent-strong); }
+    form { border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:14px; margin-bottom:16px; display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:10px; align-items:end; }
+    label { display:grid; gap:5px; font-size:12px; font-weight:700; color:var(--ink); }
+    select, input { width:100%; min-height:36px; border:1px solid var(--line); border-radius:6px; padding:7px 9px; font-size:14px; color:var(--ink); background:#fff; }
+    button { min-height:36px; border:0; border-radius:6px; padding:8px 12px; font-size:14px; font-weight:700; color:#fff; background:var(--accent); cursor:pointer; }
+    button:hover { background:var(--accent-strong); }
+    .table-wrap { border:1px solid var(--line); border-radius:6px; overflow:auto; background:#fff; }
+    table { width:100%; border-collapse:collapse; font-size:13px; min-width:980px; }
+    th, td { border-bottom:1px solid #edf1ef; padding:9px 10px; text-align:left; vertical-align:top; }
+    th { position:sticky; top:0; background:var(--panel); color:var(--ink); font-size:12px; z-index:1; }
+    td.reason { max-width:320px; overflow-wrap:anywhere; }
+    .badge { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; background:var(--panel); font-size:12px; font-weight:700; }
+    .badge.send { color:var(--accent); }
+    .badge.doNotSend { color:var(--danger); }
+    .toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
+    .empty { color:var(--muted); padding:18px; }
+    @media (max-width: 900px) { .summary { grid-template-columns:repeat(2, minmax(0, 1fr)); } form { grid-template-columns:1fr 1fr; } }
+    @media (max-width: 620px) { header { display:block; } header nav { margin-top:8px; } .summary, form { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true">
+      <div>
+        <h1>Run Report</h1>
+        <div class="meta">${escapeHtml(model.runId)}</div>
+      </div>
+    </div>
+    <nav><a href="/runs">Previous Runs</a> · <a href="${escapeHtml(jsonHref)}">JSON</a></nav>
+  </header>
+  <main>
+    <div class="summary">
+      ${metricHtml("Matching rows", model.summary.total)}
+      ${metricHtml("Send", model.summary.send)}
+      ${metricHtml("Do-not-send", model.summary.doNotSend)}
+      ${metricHtml("Showing", Math.min(model.totalMatches, model.limit))}
+    </div>
+    ${reportFilterForm(model)}
+    <div class="toolbar">
+      <div class="meta">Showing ${Math.min(model.totalMatches, model.limit)} of ${model.totalMatches} matching result(s).</div>
+      <div class="meta">Total stored results: ${model.allSummary.total}</div>
+    </div>
+    <div class="table-wrap">
+      ${model.results.length === 0 ? '<div class="empty">No report rows match the current filters.</div>' : reportTable(model.results)}
+    </div>
+  </main>
+</body>
+</html>`;
+}
+
+function metricHtml(label: string, value: number): string {
+  return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`;
+}
+
+function reportFilterForm(model: ReportPageModel): string {
+  return `
+    <form method="get" action="/runs/${encodeURIComponent(model.runId)}/report">
+      <label>Bucket
+        <select name="bucket">
+          ${optionHtml("", "All", model.filter.bucket)}
+          ${optionHtml("send", "Send", model.filter.bucket)}
+          ${optionHtml("doNotSend", "Do-not-send", model.filter.bucket)}
+        </select>
+      </label>
+      <label>Worksheet
+        <select name="worksheet">
+          ${optionHtml("", "All", model.filter.worksheet)}
+          ${Object.keys(model.allSummary.byWorksheet).sort().map((value) => optionHtml(value, value, model.filter.worksheet)).join("")}
+        </select>
+      </label>
+      <label>License type
+        <select name="licenseType">
+          ${optionHtml("", "All", model.filter.licenseType)}
+          ${Object.keys(model.allSummary.byLicenseType).sort().map((value) => optionHtml(value, value, model.filter.licenseType)).join("")}
+        </select>
+      </label>
+      <label>Trade
+        <select name="trade">
+          ${optionHtml("", "All", model.filter.trade)}
+          ${Object.keys(model.allSummary.byTrade).sort().map((value) => optionHtml(value, value, model.filter.trade)).join("")}
+        </select>
+      </label>
+      <label>Reason contains
+        <input name="reasonContains" value="${escapeHtml(model.filter.reasonContains ?? "")}">
+      </label>
+      <label>Limit
+        <input name="limit" type="number" min="1" max="500" value="${model.limit}">
+      </label>
+      <button type="submit">Apply Filters</button>
+    </form>
+  `;
+}
+
+function optionHtml(value: string, label: string, selectedValue: string | undefined): string {
+  const selected = normalizeReportValue(value) === normalizeReportValue(selectedValue) ? " selected" : "";
+  return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
+}
+
+function reportTable(results: LookupResultRecord[]): string {
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Bucket</th>
+          <th>License</th>
+          <th>Name</th>
+          <th>Worksheet</th>
+          <th>License Type</th>
+          <th>Trade</th>
+          <th>Expiration</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${results.map(reportRowHtml).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function reportRowHtml(result: LookupResultRecord): string {
+  const tradesman = result.tradesman;
+  const bucketLabel = result.bucket === "send" ? "Send" : "Do-not-send";
+  return `
+    <tr>
+      <td><span class="badge ${result.bucket}">${bucketLabel}</span></td>
+      <td>${escapeHtml(tradesman.licenseNumber)}</td>
+      <td>${escapeHtml(tradesman.name ?? "")}</td>
+      <td>${escapeHtml(tradesman.sourceLocation ?? tradesman.sourceWorksheet ?? "")}</td>
+      <td>${escapeHtml(tradesman.licenseType ?? "")}</td>
+      <td>${escapeHtml(tradesman.trade ?? "")}</td>
+      <td>${escapeHtml(tradesman.expirationDate ?? "")}</td>
+      <td class="reason">${escapeHtml(tradesman.notSendReason ?? "")}</td>
+    </tr>
+  `;
+}
+
+function reportQuery(filter: LookupResultFilter, limit: number): string {
+  const searchParams = new URLSearchParams();
+  if (filter.bucket) searchParams.set("bucket", filter.bucket);
+  if (filter.worksheet) searchParams.set("worksheet", filter.worksheet);
+  if (filter.licenseType) searchParams.set("licenseType", filter.licenseType);
+  if (filter.trade) searchParams.set("trade", filter.trade);
+  if (filter.reasonContains) searchParams.set("reasonContains", filter.reasonContains);
+  searchParams.set("limit", String(limit));
+  return searchParams.toString();
+}
+
+function normalizeReportValue(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
 }
 
 function runsHtml(runSummaries: PreviousRunSummary[]): string {

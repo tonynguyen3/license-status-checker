@@ -155,7 +155,7 @@ npm run web
 Then open:
 
 ```text
-http://localhost:3000
+http://localhost:3001
 ```
 
 ![License Status Checker web interface](docs/web-interface.png)
@@ -189,14 +189,14 @@ That keeps local runs simple while leaving clear places to add Azure Queue/Blob/
 
 The work queue also uses resumable item leasing. Work items move through `queued`, `in_progress`, `completed`, and `failed` states. A worker claims one queued item at a time, marks it complete after writing a lookup result, marks it failed when a website check fails, releases stale `in_progress` claims on the next worker start, and requeues failed items for later retry until the attempt cap is reached. This mirrors how a cloud queue worker would claim, heartbeat, retry, and complete messages.
 
-Reporting now has a read-model layer as well. `ReportRepository` reads durable lookup results and can summarize or filter them by bucket, worksheet, license type, trade, and not-send reason. The Previous Runs page links to a JSON report endpoint for each run:
+Reporting now has a read-model layer as well. `ReportRepository` reads durable lookup results and can summarize or filter them by bucket, worksheet, license type, trade, and not-send reason. The Previous Runs page links to a browser-viewable report page for each run:
 
 ```text
 /runs/{runId}/report
 /runs/{runId}/report?bucket=send&worksheet=Electricians&limit=100
 ```
 
-This endpoint is intended to power future browser-viewable report tables while keeping CSV/XLSX generation available for downloads and email attachments.
+The report page shows summary counters, filters, and a table of matching rows. Use `format=json` on the same URL to fetch the read model as JSON while keeping CSV/XLSX generation available for downloads and email attachments.
 
 Run progress is persisted to `run-state.json` inside each run's output folder, and the UI progress feed is summarized so it does not emit every row to the browser.
 
@@ -259,10 +259,10 @@ EMAIL_RECIPIENTS=recipient@example.com
 Optional:
 
 ```text
-EMAIL_BASE_URL=http://localhost:3000
+EMAIL_BASE_URL=http://localhost:3001
 ```
 
-If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3000`. Keep the web server running if recipients need to open the log links.
+If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3001` for local development. Keep the web server running if recipients need to open the log links.
 
 ### Email Input Workbook
 
