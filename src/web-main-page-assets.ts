@@ -63,6 +63,18 @@ export function mainPageStyles(): string {
 }
 
 export function mainPageScript(): string {
+  return [
+    browserStateScript(),
+    inputWorkflowScript(),
+    runWorkflowScript(),
+    progressWorkflowScript(),
+    outputFilesScript(),
+    emailPollingScript(),
+    sharedUiScript()
+  ].join("\n");
+}
+
+function browserStateScript(): string {
   return `
     const state = { uploadId: null, eventSource: null, isRunning: false, currentRunId: null, stopRequested: false };
     const maxFeedLines = 500;
@@ -92,7 +104,11 @@ export function mainPageScript(): string {
 
     refreshEmailPollStatus();
     setInterval(refreshEmailPollStatus, 60000);
+  `;
+}
 
+function inputWorkflowScript(): string {
+  return `
     uploadButton.addEventListener("click", async () => {
       const file = fileInput.files[0];
       if (!file) return setStatus("Choose an .xlsx file first.");
@@ -118,7 +134,11 @@ export function mainPageScript(): string {
       const source = payload.email?.subject ? ' from email "' + payload.email.subject + '"' : " from email";
       loadWorkbook(payload, "Workbook loaded" + source + ".");
     });
+  `;
+}
 
+function runWorkflowScript(): string {
+  return `
     runButton.addEventListener("click", async () => {
       if (!state.uploadId) return setStatus("Upload a workbook first.");
       feed.innerHTML = "";
@@ -166,7 +186,11 @@ export function mainPageScript(): string {
       }
       setStatus("Stop requested.");
     });
+  `;
+}
 
+function emailPollingScript(): string {
+  return `
     enableEmailPoll.addEventListener("click", async () => {
       const initialTime = emailPollTime.value || "06:00";
       const requestedTime = window.prompt("What time should email polling run each day? Use 24-hour HH:MM time.", initialTime);
@@ -190,6 +214,49 @@ export function mainPageScript(): string {
       await setEmailPolling("/email-poll/disable");
     });
 
+    async function refreshEmailPollStatus() {
+      try {
+        const response = await fetch("/email-poll/status");
+        const payload = await response.json();
+        emailPollEnabled.textContent = payload.enabled
+          ? "Enabled" + (payload.scheduledTime ? " at " + payload.scheduledTime : "")
+          : "Disabled";
+        emailPollLastChecked.textContent = formatDateTime(payload.lastCheckedAt) || "Never";
+        emailPollLastResult.textContent = payload.lastResult || "No checks yet.";
+        emailPollNextCheck.textContent = formatDateTime(payload.nextCheckAt) || "Not scheduled";
+        if (payload.scheduledTime) emailPollTime.value = payload.scheduledTime;
+        enableEmailPoll.disabled = payload.enabled;
+        disableEmailPoll.disabled = !payload.enabled;
+      } catch {
+        emailPollEnabled.textContent = "Unavailable";
+      }
+    }
+
+    async function setEmailPolling(path, body) {
+      enableEmailPoll.disabled = true;
+      disableEmailPoll.disabled = true;
+      try {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          const message = payload.error || "Email polling update failed.";
+          emailPollLastResult.textContent = message;
+          setStatus(message);
+        }
+      } catch {
+        setStatus("Email polling update failed.");
+      }
+      await refreshEmailPollStatus();
+    }
+  `;
+}
+
+function progressWorkflowScript(): string {
+  return `
     function connect(runId) {
       closeProgressStream();
       state.eventSource = new EventSource("/runs/" + runId + "/events");
@@ -240,7 +307,11 @@ export function mainPageScript(): string {
       state.eventSource.close();
       state.eventSource = null;
     }
+  `;
+}
 
+function outputFilesScript(): string {
+  return `
     function renderFiles(fileLinks) {
       const labels = {
         send: "Send workbook",
@@ -265,7 +336,11 @@ export function mainPageScript(): string {
         files.appendChild(item);
       }
     }
+  `;
+}
 
+function sharedUiScript(): string {
+  return `
     function loadWorkbook(payload, message) {
       state.uploadId = payload.id;
       worksheet.innerHTML = '<option value="">All worksheets</option>';
@@ -302,45 +377,6 @@ export function mainPageScript(): string {
 
     function setStatus(message) {
       status.textContent = message;
-    }
-
-    async function refreshEmailPollStatus() {
-      try {
-        const response = await fetch("/email-poll/status");
-        const payload = await response.json();
-        emailPollEnabled.textContent = payload.enabled
-          ? "Enabled" + (payload.scheduledTime ? " at " + payload.scheduledTime : "")
-          : "Disabled";
-        emailPollLastChecked.textContent = formatDateTime(payload.lastCheckedAt) || "Never";
-        emailPollLastResult.textContent = payload.lastResult || "No checks yet.";
-        emailPollNextCheck.textContent = formatDateTime(payload.nextCheckAt) || "Not scheduled";
-        if (payload.scheduledTime) emailPollTime.value = payload.scheduledTime;
-        enableEmailPoll.disabled = payload.enabled;
-        disableEmailPoll.disabled = !payload.enabled;
-      } catch {
-        emailPollEnabled.textContent = "Unavailable";
-      }
-    }
-
-    async function setEmailPolling(path, body) {
-      enableEmailPoll.disabled = true;
-      disableEmailPoll.disabled = true;
-      try {
-        const response = await fetch(path, {
-          method: "POST",
-          headers: body ? { "Content-Type": "application/json" } : undefined,
-          body: body ? JSON.stringify(body) : undefined
-        });
-        const payload = await response.json();
-        if (!response.ok) {
-          const message = payload.error || "Email polling update failed.";
-          emailPollLastResult.textContent = message;
-          setStatus(message);
-        }
-      } catch {
-        setStatus("Email polling update failed.");
-      }
-      await refreshEmailPollStatus();
     }
 
     function formatDateTime(value) {
