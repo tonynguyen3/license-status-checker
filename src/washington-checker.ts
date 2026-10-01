@@ -42,6 +42,12 @@ interface LicenseTiming {
   message: string;
 }
 
+interface CourseListRow {
+  className: string;
+  label: string;
+  value: string;
+}
+
 const TIMING_HICCUP_TOTAL_MS = 10_000;
 const TIMING_HICCUP_NAVIGATION_MS = 8_000;
 const TIMING_HICCUP_PHASE_MS = 5_000;
@@ -395,34 +401,53 @@ export class WashingtonLicenseChecker {
   }
 
   private async recordCourseFrequencies(page: Page): Promise<void> {
-    const courseBlocks = page.locator("#coursesList .itemSingleCol");
-    const count = await courseBlocks.count();
+    const rows = await page.evaluate(`(() => {
+      const list = document.querySelector("#coursesList");
+      if (!list) return [];
+      const clean = (value) => (value || "").replace(/\\s+/g, " ").trim();
 
-    for (let i = 0; i < count; i++) {
-      const block = courseBlocks.nth(i);
+      return Array.from(list.children).map((row) => ({
+        className: String(row.className || ""),
+        label: clean(row.querySelector("label")?.textContent),
+        value: clean(row.querySelector("span")?.textContent)
+      }));
+    })()`) as CourseListRow[];
 
-      try {
-        const nameLabel = block.locator("label");
-        const labelText = (await nameLabel.innerText()).trim();
-        const sibling = block.locator("xpath=following-sibling::div").locator("xpath=following-sibling::div");
-        const codeLabel = sibling.locator("label");
-        const codeLabelText = (await codeLabel.innerText()).trim();
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
 
-        if (labelText !== "Course title" || codeLabelText !== "Course code") continue;
+      // Washington inserts Course Hours rows and blank spacer rows between course entries.
+      // Those rows are expected page structure, so skip them synchronously instead of
+      // asking Playwright locators to wait for labels or siblings that will never exist.
+      if (row.label !== "Course title" || !row.value) continue;
 
-        const courseName = (await nameLabel.locator("xpath=following-sibling::span").innerText()).trim();
-        const courseCode = (await codeLabel.locator("xpath=following-sibling::span").innerText()).trim();
-        const key = `${courseName}\u0000${courseCode}`;
-        const existing = this.courseCounts.get(key);
+      let courseCode = "";
+      for (let j = i + 1; j < rows.length; j++) {
+        const nearby = rows[j];
 
-        if (existing) {
-          existing.frequency++;
-        } else {
-          this.courseCounts.set(key, { courseName, courseCode, frequency: 1 });
+        // The next Course title means this entry had no usable Course code. Stop looking
+        // for this course and let the outer loop handle the next title row.
+        if (nearby.label === "Course title") break;
+
+        if (nearby.label === "Course code") {
+          courseCode = nearby.value;
+          break;
         }
-      } catch {
-        continue;
       }
+
+      if (!courseCode) continue;
+      this.recordCourseFrequency(row.value, courseCode);
+    }
+  }
+
+  private recordCourseFrequency(courseName: string, courseCode: string): void {
+    const key = `${courseName}\u0000${courseCode}`;
+    const existing = this.courseCounts.get(key);
+
+    if (existing) {
+      existing.frequency++;
+    } else {
+      this.courseCounts.set(key, { courseName, courseCode, frequency: 1 });
     }
   }
 
