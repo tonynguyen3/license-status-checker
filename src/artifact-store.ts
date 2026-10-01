@@ -1,5 +1,5 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildOutputPaths } from "./paths.js";
 import type { OutputPaths } from "./types.js";
 
@@ -29,9 +29,10 @@ export class FilesystemArtifactStore implements ArtifactStore {
   runDirectory(runId: string): string | undefined {
     if (!isSafeRunId(runId)) return undefined;
 
-    const directory = resolve(this.rootDir, runId);
-    const rootWithSeparator = `${this.rootDir}${this.rootDir.endsWith("/") ? "" : "/"}`;
-    if (directory !== this.rootDir && !directory.startsWith(rootWithSeparator)) return undefined;
+    const root = resolve(this.rootDir);
+    const directory = resolve(root, runId);
+    const relativePath = relative(root, directory);
+    if (relativePath.startsWith("..") || isAbsolute(relativePath)) return undefined;
 
     return directory;
   }
