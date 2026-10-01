@@ -1,5 +1,3 @@
-import { mainPageScript, mainPageStyles } from "./web-main-page-assets.js";
-
 export function pageHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -8,8 +6,8 @@ export function pageHtml(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/png" href="/app-icon.png">
   <link rel="apple-touch-icon" href="/app-icon.png">
+  <link rel="stylesheet" href="/assets/main.css">
   <title>License Status Checker</title>
-  <style>${mainPageStyles()}</style>
 </head>
 <body>
   ${pageHeader()}
@@ -17,7 +15,7 @@ export function pageHtml(): string {
     ${workflowSidebar()}
     ${runSurface()}
   </main>
-  <script>${mainPageScript()}</script>
+  <script src="/assets/main.js"></script>
 </body>
 </html>`;
 }

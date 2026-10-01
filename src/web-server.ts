@@ -4,7 +4,8 @@ import { extname, resolve } from "node:path";
 import { loadEnvFile } from "./env.js";
 import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { EmailPollScheduler } from "./web-email-poll.js";
-import { parseMultipartFile, readRequestBody, sendFile, sendHtml, sendJson } from "./web-http.js";
+import { parseMultipartFile, readRequestBody, sendFile, sendHtml, sendJson, sendText } from "./web-http.js";
+import { mainPageScript, mainPageStyles } from "./web-main-page-assets.js";
 import { pageHtml } from "./web-pages.js";
 import { WebRunManager, writeSseEvent } from "./web-runs.js";
 import { runsHtml } from "./web-runs-page.js";
@@ -24,6 +25,16 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/") {
       sendHtml(response, pageHtml());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/assets/main.css") {
+      sendText(response, 200, "text/css; charset=utf-8", mainPageStyles());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/assets/main.js") {
+      sendText(response, 200, "application/javascript; charset=utf-8", mainPageScript());
       return;
     }
 

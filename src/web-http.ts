@@ -58,6 +58,14 @@ export function sendHtml(response: ServerResponse, html: string): void {
   response.end(html);
 }
 
+export function sendText(response: ServerResponse, status: number, contentType: string, body: string): void {
+  response.writeHead(status, {
+    "Content-Type": contentType,
+    "Cache-Control": "no-cache"
+  });
+  response.end(body);
+}
+
 export async function sendFile(
   response: ServerResponse,
   path: string,
