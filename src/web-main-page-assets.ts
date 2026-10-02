@@ -19,7 +19,7 @@ export function mainPageStyles(): string {
     button.danger { background:var(--danger); }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; }
-    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
     .toolbar h2 { margin:0; }
     .toolbar label { margin:0; font-weight:400; }
     .stack { display:grid; gap:12px; }
@@ -35,7 +35,7 @@ export function mainPageStyles(): string {
     .stage-body button { width:100%; }
     .inline-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
     .meta { color:var(--muted); font-size:13px; line-height:1.4; }
-    .progress { margin:0 0 18px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
+    .progress { margin:0 0 10px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
     .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#fff; }
     .feed div { padding:5px 0; border-bottom:1px solid #f1f3f4; }
@@ -56,8 +56,8 @@ export function mainPageStyles(): string {
     .status-actions { display:flex; gap:8px; margin-top:10px; }
     .status-actions button { flex:1; }
     button.secondary { background:#5f6368; }
-    .run-surface { display:grid; grid-template-rows:auto auto 1fr auto auto; min-height:calc(100vh - 65px); }
-    .results-heading { margin-top:20px; }
+    .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 65px); }
+    .results-heading { margin:20px 0 0; }
     @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { grid-template-columns:1fr; } .run-surface { min-height:auto; } }
   `;
 }
