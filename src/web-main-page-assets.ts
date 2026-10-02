@@ -19,11 +19,11 @@ export function mainPageStyles(): string {
     button.danger { background:var(--danger); }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .row { display:flex; align-items:center; gap:8px; }
-    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:8px 0 12px; }
     .toolbar h2 { margin:0; }
     .toolbar label { margin:0; font-weight:400; }
     .stack { display:grid; gap:12px; }
-    .workflow { display:grid; gap:14px; }
+    .workflow { display:grid; align-content:start; gap:14px; }
     .stage { border:1px solid var(--line); border-radius:6px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.03); }
     .stage-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
     .stage-number { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; flex:0 0 auto; background:var(--accent); color:#fff; font-size:13px; font-weight:700; }
