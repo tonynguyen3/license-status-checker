@@ -152,6 +152,8 @@ The page lets you upload `ListToCheck.xlsx`, choose a worksheet, set an optional
 
 The `Previous Runs` page lists completed run folders and lets you delete old runs. Deleting a run removes its folder under `Files/web-runs` and its output files from disk.
 
+The web server also automatically purges timestamped run folders under `Files/web-runs` that are older than 20 days. Cleanup runs when the web server starts and then once per day while it stays running. To change the retention window, set `WEB_RUN_RETENTION_DAYS` in `.env`.
+
 If Washington returns an HTTP `429` response, or appears to show an F5/rate-limit rejection page, the app writes that to `exception.txt` and stops the website checks before moving to the next license.
 
 ### Email Results

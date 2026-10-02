@@ -16,6 +16,7 @@ const port = Number(process.env.PORT ?? 3000);
 const rootDir = resolve("Files", "web-runs");
 const emailPollLogPath = resolve("Files", "email-poll.log");
 const appIconPath = resolve("docs", "license-status-checker-icon.png");
+const webRunRetentionDays = parseRetentionDays(process.env.WEB_RUN_RETENTION_DAYS);
 const webRuns = new WebRunManager(rootDir);
 const emailPoll = new EmailPollScheduler({ logPath: emailPollLogPath, port, webRuns });
 
@@ -110,6 +111,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`Web interface running at http://localhost:${port}`);
+  startWebRunPurgeScheduler();
   emailPoll.startFromEnvironment();
 });
 
@@ -292,4 +294,29 @@ function requestBaseUrl(request: IncomingMessage): string {
   const forwardedProto = request.headers["x-forwarded-proto"];
   const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
   return `${proto ?? "http"}://${host}`;
+}
+
+function startWebRunPurgeScheduler(): void {
+  void purgeOldWebRuns();
+  setInterval(() => {
+    void purgeOldWebRuns();
+  }, 24 * 60 * 60 * 1000);
+}
+
+async function purgeOldWebRuns(): Promise<void> {
+  try {
+    const result = await webRuns.purgeOldRuns(webRunRetentionDays);
+    if (result.deleted.length > 0) {
+      console.log(`[web-runs] Purged ${result.deleted.length} run folder(s) older than ${webRunRetentionDays} day(s): ${result.deleted.join(", ")}`);
+    } else {
+      console.log(`[web-runs] No run folders older than ${webRunRetentionDays} day(s) to purge.`);
+    }
+  } catch (error) {
+    console.error(`[web-runs] Could not purge old run folders: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function parseRetentionDays(value: string | undefined): number {
+  const parsed = Number(value ?? 20);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 20;
 }

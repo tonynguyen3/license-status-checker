@@ -38,6 +38,11 @@ export interface PreviousRunSummary {
   files: Record<string, FileLink>;
 }
 
+export interface RunPurgeResult {
+  deleted: string[];
+  retained: number;
+}
+
 export class WebRunManager {
   private readonly uploads = new Map<string, UploadedWorkbook>();
   private readonly runs = new Map<string, WebRun>();
@@ -244,6 +249,50 @@ export class WebRunManager {
     return [...this.runs.values()].some((run) => run.status === "running");
   }
 
+  async purgeOldRuns(retentionDays: number, now = new Date()): Promise<RunPurgeResult> {
+    await mkdir(this.rootDir, { recursive: true });
+    const cutoffTime = now.getTime() - retentionDays * 24 * 60 * 60 * 1000;
+    const entries = await readdir(this.rootDir, { withFileTypes: true });
+    const deleted: string[] = [];
+    let retained = 0;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const run = this.runs.get(entry.name);
+      if (run?.status === "running") {
+        retained++;
+        continue;
+      }
+
+      const runDir = this.runDirectory(entry.name);
+      if (!runDir) {
+        retained++;
+        continue;
+      }
+
+      let folderStat;
+      try {
+        folderStat = await stat(runDir);
+      } catch {
+        continue;
+      }
+
+      const runDate = parseRunFolderDate(entry.name) ?? folderStat.birthtime;
+      if (runDate.getTime() >= cutoffTime) {
+        retained++;
+        continue;
+      }
+
+      await rm(runDir, { recursive: true, force: true });
+      this.runs.delete(entry.name);
+      this.uploads.delete(entry.name);
+      deleted.push(entry.name);
+    }
+
+    return { deleted, retained };
+  }
+
   private async maybeEmailResults(
     run: WebRun,
     result: Awaited<ReturnType<typeof runWashingtonCheck>>,
@@ -372,4 +421,21 @@ export function writeSseEvent(response: ServerResponse, update: ProgressUpdate):
 
 function pad(value: number): string {
   return value.toString().padStart(2, "0");
+}
+
+function parseRunFolderDate(runId: string): Date | undefined {
+  const match = runId.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})(?:-\d+)?$/);
+  if (!match) return undefined;
+
+  const [, year, month, day, hour, minute, second] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second)
+  );
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
