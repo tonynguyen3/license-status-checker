@@ -2,19 +2,19 @@ export function mainPageStyles(): string {
   return `
     :root { color-scheme: light; --ink:#10233f; --muted:#5d6673; --line:#cfd8d3; --panel:#f4faf6; --accent:#005f3c; --accent-strong:#00345f; --ok:#0b6f43; --warn:#d19300; --danger:#b3261e; --gold:#f6be00; }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fbfdfb; }
-    header { border-bottom:1px solid var(--line); padding:14px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
-    h1 { font-size:20px; margin:0; font-weight:700; color:var(--accent-strong); }
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; font-size:17px; color:var(--ink); background:#fbfdfb; }
+    header { border-bottom:1px solid var(--line); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.04); }
+    h1 { font-size:28px; margin:0; font-weight:700; color:var(--accent-strong); }
     .brand { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
-    main { display:grid; grid-template-columns: 390px 1fr; min-height:calc(100vh - 65px); }
+    main { display:grid; grid-template-columns: 430px 1fr; min-height:calc(100vh - 73px); }
     aside { border-right:1px solid var(--line); padding:20px; background:var(--panel); }
     section { padding:20px 24px; }
-    label { display:block; font-size:13px; font-weight:700; margin:18px 0 6px; }
-    input, select { width:100%; min-height:38px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; font-size:14px; background:#fff; color:var(--ink); }
+    label { display:block; font-size:17px; font-weight:700; margin:20px 0 8px; }
+    input, select { width:100%; min-height:48px; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font-size:18px; background:#fff; color:var(--ink); }
     input:focus, select:focus { outline:2px solid rgba(246,190,0,.45); border-color:var(--accent); }
     input[type="checkbox"] { width:auto; min-height:auto; }
-    button { min-height:38px; border:0; border-radius:6px; padding:8px 12px; font-size:14px; font-weight:700; background:var(--accent); color:#fff; cursor:pointer; }
+    button { min-height:48px; border:0; border-radius:6px; padding:10px 14px; font-size:18px; font-weight:700; background:var(--accent); color:#fff; cursor:pointer; }
     button:hover:not(:disabled) { background:var(--accent-strong); }
     button.danger { background:var(--danger); }
     button:disabled { opacity:.5; cursor:not-allowed; }
@@ -24,13 +24,13 @@ export function mainPageStyles(): string {
     .toolbar label { margin:0; font-weight:400; }
     .stack { display:grid; gap:12px; }
     .workflow { display:grid; align-content:start; gap:14px; }
-    .stage { border:1px solid var(--line); border-radius:6px; padding:14px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.03); }
-    .stage-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-    .stage-number { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; flex:0 0 auto; background:var(--accent); color:#fff; font-size:13px; font-weight:700; }
+    .stage { border:1px solid var(--line); border-radius:6px; padding:16px; background:#fff; box-shadow:0 1px 0 rgba(16,35,63,.03); }
+    .stage-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+    .stage-number { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; flex:0 0 auto; background:var(--accent); color:#fff; font-size:18px; font-weight:700; }
     .stage-title { min-width:0; }
-    .stage-title h2 { margin:0; font-size:15px; color:var(--accent-strong); }
-    .stage-title p { margin:2px 0 0; color:var(--muted); font-size:12px; line-height:1.35; }
-    .stage-body { display:grid; gap:10px; }
+    .stage-title h2 { margin:0; font-size:22px; color:var(--accent-strong); }
+    .stage-title p { margin:2px 0 0; color:var(--muted); font-size:17px; line-height:1.35; }
+    .stage-body { display:grid; gap:12px; }
     .stage-body label:first-child { margin-top:0; }
     .stage-body button { width:100%; }
     .inline-buttons { display:flex; gap:8px; }
@@ -38,15 +38,16 @@ export function mainPageStyles(): string {
     .advanced-feature { display:none !important; }
     body.advanced-features .advanced-feature { display:block !important; }
     body.advanced-features label.advanced-feature { display:flex !important; }
-    .meta { color:var(--muted); font-size:13px; line-height:1.4; }
+    .meta { color:var(--muted); font-size:17px; line-height:1.4; }
     .progress { margin:0 0 10px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
-    .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#fff; }
+    .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:15px; background:#fff; }
     .feed div { padding:5px 0; border-bottom:1px solid #f1f3f4; }
     .files { margin-top:14px; }
     .files-table { width:100%; border-collapse:collapse; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
     .files-table th, .files-table td { border-bottom:1px solid #edf1ef; padding:10px 12px; text-align:left; vertical-align:middle; }
-    .files-table th { background:var(--panel); color:var(--accent-strong); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .files-table th { background:var(--panel); color:var(--accent-strong); font-size:14px; text-transform:uppercase; letter-spacing:.04em; }
+    .files-table td { font-size:16px; }
     .files-table tr:last-child td { border-bottom:0; }
     .files-table td:last-child { text-align:right; white-space:nowrap; }
     .file { border:1px solid var(--line); border-radius:6px; padding:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
@@ -58,14 +59,14 @@ export function mainPageStyles(): string {
     .file-actions { display:flex; gap:8px; justify-content:flex-end; flex:0 0 auto; }
     .file a, .files-table a, .meta a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
     .status-box { border:1px solid var(--line); border-radius:6px; padding:10px; background:#fff; }
-    .status-box h2 { font-size:14px; margin:0 0 8px; }
+    .status-box h2 { font-size:18px; margin:0 0 8px; }
     .status-box dl { margin:0; display:grid; gap:6px; }
     .status-box dt { font-weight:700; color:var(--ink); }
     .status-box dd { margin:0; color:var(--muted); overflow-wrap:anywhere; }
     .status-actions { display:flex; gap:8px; margin-top:10px; }
     .status-actions button { flex:1; }
     button.secondary { background:#5f6368; }
-    .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 65px); }
+    .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 73px); }
     .results-heading { margin:20px 0 0; }
     @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { flex-direction:column; } .run-surface { min-height:auto; } .files-table th, .files-table td { padding:8px; } }
   `;
@@ -391,7 +392,7 @@ function sharedUiScript(): string {
   return `
     function loadWorkbook(payload, message) {
       state.uploadId = payload.id;
-      worksheet.innerHTML = '<option value="">All worksheets</option>';
+      worksheet.innerHTML = '<option value="">All supported trades</option>';
       for (const name of payload.worksheets) {
         const option = document.createElement("option");
         option.value = name;

@@ -34,24 +34,28 @@ function pageHeader(): string {
 function workflowSidebar(): string {
   return `
     <aside class="workflow">
-      ${stage(1, "Input", "Upload a workbook to start a run.", `
-        <label for="file">Input workbook</label>
+      ${stage(1, "Input", "Choose File then click Load Excel", `
+        <label for="file">Input Excel</label>
         <input id="file" type="file" accept=".xlsx">
         <div class="inline-buttons">
-          <button id="upload">Upload Input File</button>
+          <button id="upload">Load Excel</button>
           <button id="checkEmail" class="advanced-feature">Check Email</button>
         </div>
         <div class="meta" id="uploadMeta"></div>
       `)}
-      ${stage(2, "Configure", "Choose the worksheet, row limit, and pause between website checks.", `
+      ${stage(2, "Configure", "Choose a single trade type to process or leave it as All to process all the trades", `
         <label for="worksheet">Worksheet</label>
         <select id="worksheet" disabled>
-          <option value="">All supported worksheets</option>
+          <option value="">All supported trades</option>
         </select>
-        <label for="limit">Website check limit</label>
-        <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
-        <label for="checkDelay">Pause between website checks</label>
-        <input id="checkDelay" type="number" min="0" step="0.5" value="1.5">
+        <div class="advanced-feature">
+          <label for="limit">Website check limit</label>
+          <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
+        </div>
+        <div class="advanced-feature">
+          <label for="checkDelay">Pause between website checks</label>
+          <input id="checkDelay" type="number" min="0" step="0.5" value="1.5">
+        </div>
         <label class="row advanced-feature"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
       `)}
       ${stage(3, "Run", "Start the website checks, or stop after the current license finishes.", `
