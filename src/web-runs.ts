@@ -235,8 +235,7 @@ export class WebRunManager {
       coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
       expired: outputPaths.expiredLogPath,
       greaterThan90: outputPaths.greaterThan90LogPath,
-      exception: outputPaths.exceptionLogPath,
-      timings: outputPaths.timingLogPath
+      exception: outputPaths.exceptionLogPath
     };
     return files[fileKey];
   }
@@ -307,8 +306,7 @@ export class WebRunManager {
         coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
         expired: outputPaths.expiredLogPath,
         greaterThan90: outputPaths.greaterThan90LogPath,
-        exception: outputPaths.exceptionLogPath,
-        timings: outputPaths.timingLogPath
+        exception: outputPaths.exceptionLogPath
       }).map(([key]) => [key, `/runs/${runId}/files/${key}`])
     );
   }
@@ -321,8 +319,7 @@ export class WebRunManager {
         coursesAlreadyTaken: outputPaths.coursesAlreadyTakenPath,
         expired: outputPaths.expiredLogPath,
         greaterThan90: outputPaths.greaterThan90LogPath,
-        exception: outputPaths.exceptionLogPath,
-        timings: outputPaths.timingLogPath
+        exception: outputPaths.exceptionLogPath
       }).map(([key, path]) => [key, { href: `/runs/${runId}/files/${key}`, label: basename(path) }])
     );
   }

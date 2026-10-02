@@ -15,7 +15,6 @@ export function runsHtml(runSummaries: Array<{ id: string; createdAt: string; fi
           ${runFileLink(run.files.expired)}
           ${runFileLink(run.files.greaterThan90)}
           ${runFileLink(run.files.exception)}
-          ${runFileLink(run.files.timings)}
         </div>
         <button type="button" class="delete-run" data-run-id="${escapeHtml(run.id)}">Delete</button>
       </div>

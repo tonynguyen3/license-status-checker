@@ -351,8 +351,7 @@ function outputFilesScript(): string {
         coursesAlreadyTaken: "Course frequency workbook (.xlsx)",
         expired: "Expired log (.txt)",
         greaterThan90: "Greater-than-90 log (.txt)",
-        exception: "Exception log (.txt)",
-        timings: "Timing log (.txt)"
+        exception: "Exception log (.txt)"
       };
       files.innerHTML = "";
       const table = document.createElement("table");

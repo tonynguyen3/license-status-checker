@@ -87,8 +87,7 @@ function buildMessage(config: EmailConfig, options: EmailResultsOptions, attachm
   const logLinks = [
     ["Expired log", fileUrl(options.baseUrl, options.runId, "expired")],
     ["Greater-than-90 log", fileUrl(options.baseUrl, options.runId, "greaterThan90")],
-    ["Exception log", fileUrl(options.baseUrl, options.runId, "exception")],
-    ["Timing log", fileUrl(options.baseUrl, options.runId, "timings")]
+    ["Exception log", fileUrl(options.baseUrl, options.runId, "exception")]
   ];
   const html = [
     `<p>The license status checker run ${options.canceled ? "was stopped" : "finished successfully"}.</p>`,
