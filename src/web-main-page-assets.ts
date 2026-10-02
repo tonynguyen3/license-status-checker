@@ -39,15 +39,20 @@ export function mainPageStyles(): string {
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
     .feed { border:1px solid var(--line); border-radius:6px; height:55vh; overflow:auto; padding:10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:#fff; }
     .feed div { padding:5px 0; border-bottom:1px solid #f1f3f4; }
-    .files { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:14px; }
+    .files { margin-top:14px; }
+    .files-table { width:100%; border-collapse:collapse; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#fff; }
+    .files-table th, .files-table td { border-bottom:1px solid #edf1ef; padding:10px 12px; text-align:left; vertical-align:middle; }
+    .files-table th { background:var(--panel); color:var(--accent-strong); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .files-table tr:last-child td { border-bottom:0; }
+    .files-table td:last-child { text-align:right; white-space:nowrap; }
     .file { border:1px solid var(--line); border-radius:6px; padding:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
     .file-name { display:flex; align-items:center; gap:10px; min-width:0; }
     .file-icon { width:28px; height:34px; border:1px solid var(--line); border-radius:4px; display:grid; place-items:center; font-size:15px; font-weight:700; flex:0 0 auto; position:relative; background:#fff; }
     .file-icon::after { content:""; position:absolute; top:-1px; right:-1px; width:9px; height:9px; border-left:1px solid var(--line); border-bottom:1px solid var(--line); background:#f1f3f4; border-radius:0 4px 0 2px; }
     .file-icon.excel { color:#137333; border-color:#9bc3a8; background:#f3fbf5; }
     .file-icon.text { color:#5f6368; border-color:#c7ccd1; background:#f8fafd; }
-    .file-actions { display:flex; gap:8px; flex:0 0 auto; }
-    .file a, .meta a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
+    .file-actions { display:flex; gap:8px; justify-content:flex-end; flex:0 0 auto; }
+    .file a, .files-table a, .meta a { color:var(--accent-strong); font-weight:700; text-decoration:none; }
     .status-box { border:1px solid var(--line); border-radius:6px; padding:10px; background:#fff; }
     .status-box h2 { font-size:14px; margin:0 0 8px; }
     .status-box dl { margin:0; display:grid; gap:6px; }
@@ -58,7 +63,7 @@ export function mainPageStyles(): string {
     button.secondary { background:#5f6368; }
     .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 65px); }
     .results-heading { margin:20px 0 0; }
-    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { grid-template-columns:1fr; } .run-surface { min-height:auto; } }
+    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { grid-template-columns:1fr; } .run-surface { min-height:auto; } .files-table th, .files-table td { padding:8px; } }
   `;
 }
 
@@ -341,27 +346,32 @@ function outputFilesScript(): string {
   return `
     function renderFiles(fileLinks) {
       const labels = {
-        send: "Send workbook",
-        doNotSend: "Do-not-send workbook",
-        coursesAlreadyTaken: "Course frequency workbook",
-        expired: "Expired log",
-        greaterThan90: "Greater-than-90 log",
-        exception: "Exception log",
-        timings: "Timing log"
+        send: "Send workbook (.xlsx)",
+        doNotSend: "Do-not-send workbook (.xlsx)",
+        coursesAlreadyTaken: "Course frequency workbook (.xlsx)",
+        expired: "Expired log (.txt)",
+        greaterThan90: "Greater-than-90 log (.txt)",
+        exception: "Exception log (.txt)",
+        timings: "Timing log (.txt)"
       };
       files.innerHTML = "";
+      const table = document.createElement("table");
+      table.className = "files-table";
+      table.innerHTML = "<thead><tr><th>Type</th><th>File</th><th>Actions</th></tr></thead><tbody></tbody>";
+      const tbody = table.querySelector("tbody");
       for (const [key, href] of Object.entries(fileLinks)) {
-        const item = document.createElement("div");
-        item.className = "file";
+        const row = document.createElement("tr");
         const isWorkbook = ["send", "doNotSend", "coursesAlreadyTaken"].includes(key);
         const iconClass = isWorkbook ? "excel" : "text";
         const iconText = isWorkbook ? "X" : "N";
         const iconLabel = isWorkbook ? "Excel workbook" : "Text log";
-        item.innerHTML =
-          '<span class="file-name"><span class="file-icon ' + iconClass + '" title="' + iconLabel + '" aria-label="' + iconLabel + '">' + iconText + '</span><span>' + (labels[key] || key) + '</span></span>' +
-          '<span class="file-actions"><a href="' + href + '" target="_blank">View</a><a href="' + href + '?download=1">Download</a></span>';
-        files.appendChild(item);
+        row.innerHTML =
+          '<td><span class="file-name"><span class="file-icon ' + iconClass + '" title="' + iconLabel + '" aria-label="' + iconLabel + '">' + iconText + '</span><span>' + iconLabel + '</span></span></td>' +
+          '<td>' + (labels[key] || key) + '</td>' +
+          '<td><span class="file-actions"><a href="' + href + '" target="_blank">View</a><a href="' + href + '?download=1">Download</a></span></td>';
+        tbody.appendChild(row);
       }
+      files.appendChild(table);
     }
   `;
 }
