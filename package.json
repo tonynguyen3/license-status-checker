@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",
     "start": "tsx src/main.ts",
+    "start:built": "node dist/main.js",
     "web": "tsx src/web-server.ts",
+    "web:built": "node dist/web-server.js",
     "test": "vitest run",
     "install:browsers": "playwright install"
   },

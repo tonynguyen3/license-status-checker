@@ -12,7 +12,7 @@ import { runsHtml } from "./web-runs-page.js";
 
 loadEnvFile();
 
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 3001);
 const rootDir = resolve("Files", "web-runs");
 const emailPollLogPath = resolve("Files", "email-poll.log");
 const appIconPath = resolve("docs", "license-status-checker-icon.png");

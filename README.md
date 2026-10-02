@@ -143,7 +143,14 @@ npm run web
 Then open:
 
 ```text
-http://localhost:3000
+http://localhost:3001
+```
+
+For production, build the JavaScript files first and run the built server:
+
+```bash
+npm run build
+npm run web:built
 ```
 
 ![License Status Checker web interface](docs/web-interface.png)
@@ -175,10 +182,10 @@ EMAIL_RECIPIENTS=recipient@example.com
 Optional:
 
 ```text
-EMAIL_BASE_URL=http://localhost:3000
+EMAIL_BASE_URL=http://localhost:3001
 ```
 
-If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3000`. Keep the web server running if recipients need to open the log links.
+If `EMAIL_BASE_URL` is omitted, the app uses the host from the web request, usually `http://localhost:3001`. Keep the web server running if recipients need to open the log links.
 
 ### Email Input Workbook
 
