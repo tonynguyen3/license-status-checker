@@ -249,25 +249,24 @@ export class WebRunManager {
     return [...this.runs.values()].some((run) => run.status === "running");
   }
 
-  async purgeOldRuns(retentionDays: number, now = new Date()): Promise<RunPurgeResult> {
+  async purgeOldRuns(retentionCount: number): Promise<RunPurgeResult> {
     await mkdir(this.rootDir, { recursive: true });
-    const cutoffTime = now.getTime() - retentionDays * 24 * 60 * 60 * 1000;
     const entries = await readdir(this.rootDir, { withFileTypes: true });
+    const candidates: Array<{ name: string; path: string; runTime: number }> = [];
     const deleted: string[] = [];
-    let retained = 0;
+    let running = 0;
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
       const run = this.runs.get(entry.name);
       if (run?.status === "running") {
-        retained++;
+        running++;
         continue;
       }
 
       const runDir = this.runDirectory(entry.name);
       if (!runDir) {
-        retained++;
         continue;
       }
 
@@ -279,15 +278,17 @@ export class WebRunManager {
       }
 
       const runDate = parseRunFolderDate(entry.name) ?? folderStat.birthtime;
-      if (runDate.getTime() >= cutoffTime) {
-        retained++;
-        continue;
-      }
+      candidates.push({ name: entry.name, path: runDir, runTime: runDate.getTime() });
+    }
 
-      await rm(runDir, { recursive: true, force: true });
-      this.runs.delete(entry.name);
-      this.uploads.delete(entry.name);
-      deleted.push(entry.name);
+    candidates.sort((a, b) => b.runTime - a.runTime || b.name.localeCompare(a.name));
+    const retained = Math.min(candidates.length, retentionCount) + running;
+
+    for (const candidate of candidates.slice(retentionCount)) {
+      await rm(candidate.path, { recursive: true, force: true });
+      this.runs.delete(candidate.name);
+      this.uploads.delete(candidate.name);
+      deleted.push(candidate.name);
     }
 
     return { deleted, retained };
