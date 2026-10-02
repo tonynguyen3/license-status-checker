@@ -117,6 +117,15 @@ export class WashingtonLicenseChecker {
         const tradesman = limitedTradesmen[index];
         const current = index + 1;
 
+        this.options.onProgress?.({
+          type: "license_check_started",
+          message: `Checking license ${current} of ${total}: ${tradesman.licenseNumber}.`,
+          current: index,
+          total,
+          remaining: total - index,
+          licenseNumber: tradesman.licenseNumber
+        });
+
         try {
           const result = await this.checkSingleLicense(page, tradesman);
           results.push(result);
@@ -125,6 +134,14 @@ export class WashingtonLicenseChecker {
           } else {
             doNotSendCount++;
           }
+          this.options.onProgress?.({
+            type: "license_check_complete",
+            message: `Finished license ${current} of ${total}: ${tradesman.licenseNumber} -> ${formatBucket(result.bucket)}.`,
+            current,
+            total,
+            remaining: total - current,
+            licenseNumber: tradesman.licenseNumber
+          });
         } catch (error) {
           const message = error instanceof Error ? error.stack ?? error.message : String(error);
           console.log(`There was an error with ${tradesman.licenseNumber}.`);
@@ -133,6 +150,14 @@ export class WashingtonLicenseChecker {
             this.outputPaths.exceptionLogPath
           );
           errorCount++;
+          this.options.onProgress?.({
+            type: "license_check_error",
+            message: `Error checking license ${current} of ${total}: ${tradesman.licenseNumber}.`,
+            current,
+            total,
+            remaining: total - current,
+            licenseNumber: tradesman.licenseNumber
+          });
 
           if (error instanceof WashingtonRateLimitError) {
             canceled = true;
@@ -526,6 +551,10 @@ function timingHiccup(timing: LicenseTiming): string {
     reasons.push(`outcome=${timing.outcome}`);
   }
   return reasons.join("; ");
+}
+
+function formatBucket(bucket: BucketedResult["bucket"]): string {
+  return bucket === "send" ? "Send" : "Do-not-send";
 }
 
 function timingLine(timing: LicenseTiming): string {
