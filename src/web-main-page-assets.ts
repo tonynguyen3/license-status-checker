@@ -77,6 +77,7 @@ export function mainPageScript(): string {
 function browserStateScript(): string {
   return `
     const state = { uploadId: null, eventSource: null, isRunning: false, currentRunId: null, stopRequested: false };
+    const activeRunStorageKey = "licenseStatusChecker.activeRunId";
     const maxFeedLines = 500;
     const fileInput = document.getElementById("file");
     const uploadButton = document.getElementById("upload");
@@ -104,6 +105,7 @@ function browserStateScript(): string {
 
     refreshEmailPollStatus();
     setInterval(refreshEmailPollStatus, 60000);
+    restoreActiveRun();
   `;
 }
 
@@ -167,6 +169,7 @@ function runWorkflowScript(): string {
         return setStatus(payload.error || "Run failed to start.");
       }
       state.currentRunId = payload.runId;
+      rememberActiveRun(payload.runId);
       connect(payload.runId);
       setStatus("Run started.");
     });
@@ -277,6 +280,7 @@ function progressWorkflowScript(): string {
           state.isRunning = false;
           state.currentRunId = null;
           state.stopRequested = false;
+          forgetActiveRun();
           closeProgressStream();
           setBusy(false);
           setStatus(update.type === "run_canceled" ? "Run stopped." : "Run complete.");
@@ -285,6 +289,7 @@ function progressWorkflowScript(): string {
           state.isRunning = false;
           state.currentRunId = null;
           state.stopRequested = false;
+          forgetActiveRun();
           closeProgressStream();
           setBusy(false);
           setStatus(update.message);
@@ -297,6 +302,7 @@ function progressWorkflowScript(): string {
         if (status.textContent !== "Run complete." && status.textContent !== "Run stopped.") {
           setStatus("Progress connection closed.");
         }
+        forgetActiveRun();
         closeProgressStream();
         setBusy(false);
       };
@@ -306,6 +312,27 @@ function progressWorkflowScript(): string {
       if (!state.eventSource) return;
       state.eventSource.close();
       state.eventSource = null;
+    }
+
+    function restoreActiveRun() {
+      const runId = localStorage.getItem(activeRunStorageKey);
+      if (!runId) return;
+      state.isRunning = true;
+      state.currentRunId = runId;
+      state.stopRequested = false;
+      feed.innerHTML = "";
+      files.innerHTML = "";
+      setBusy(true);
+      setStatus("Reconnected to run " + runId + ".");
+      connect(runId);
+    }
+
+    function rememberActiveRun(runId) {
+      localStorage.setItem(activeRunStorageKey, runId);
+    }
+
+    function forgetActiveRun() {
+      localStorage.removeItem(activeRunStorageKey);
     }
   `;
 }
