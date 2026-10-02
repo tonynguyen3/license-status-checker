@@ -34,16 +34,16 @@ function pageHeader(): string {
 function workflowSidebar(): string {
   return `
     <aside class="workflow">
-      ${stage(1, "Input", "Upload a workbook or pull the next matching attachment from email.", `
+      ${stage(1, "Input", "Upload a workbook to start a run.", `
         <label for="file">Input workbook</label>
         <input id="file" type="file" accept=".xlsx">
         <div class="inline-buttons">
           <button id="upload">Upload Input File</button>
-          <button id="checkEmail">Check Email</button>
+          <button id="checkEmail" class="advanced-feature">Check Email</button>
         </div>
         <div class="meta" id="uploadMeta"></div>
       `)}
-      ${stage(2, "Configure", "Choose the worksheet, row limit, delay, and local browser debug mode.", `
+      ${stage(2, "Configure", "Choose the worksheet, row limit, and pause between website checks.", `
         <label for="worksheet">Worksheet</label>
         <select id="worksheet" disabled>
           <option value="">All supported worksheets</option>
@@ -51,8 +51,8 @@ function workflowSidebar(): string {
         <label for="limit">Website check limit</label>
         <input id="limit" type="number" min="1" step="1" placeholder="Leave blank for all eligible rows">
         <label for="checkDelay">Pause between website checks</label>
-        <input id="checkDelay" type="number" min="0" step="0.5" value="3">
-        <label class="row"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
+        <input id="checkDelay" type="number" min="0" step="0.5" value="1.5">
+        <label class="row advanced-feature"><input id="headed" type="checkbox"> Debug: Show browser window (only works locally)</label>
       `)}
       ${stage(3, "Run", "Start the website checks, or stop after the current license finishes.", `
         <button id="run" disabled>Run Check</button>
@@ -72,13 +72,13 @@ function workflowSidebar(): string {
             <button id="disableEmailPoll" type="button" class="secondary">Disable</button>
           </div>
         </div>
-      `)}
+      `, "advanced-feature")}
     </aside>`;
 }
 
-function stage(number: number, title: string, description: string, body: string): string {
+function stage(number: number, title: string, description: string, body: string, className = ""): string {
   return `
-      <div class="stage">
+      <div class="stage ${className}">
         <div class="stage-header">
           <div class="stage-number">${number}</div>
           <div class="stage-title">

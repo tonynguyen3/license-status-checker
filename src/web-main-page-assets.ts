@@ -33,7 +33,11 @@ export function mainPageStyles(): string {
     .stage-body { display:grid; gap:10px; }
     .stage-body label:first-child { margin-top:0; }
     .stage-body button { width:100%; }
-    .inline-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .inline-buttons { display:flex; gap:8px; }
+    .inline-buttons > button { flex:1; }
+    .advanced-feature { display:none !important; }
+    body.advanced-features .advanced-feature { display:block !important; }
+    body.advanced-features label.advanced-feature { display:flex !important; }
     .meta { color:var(--muted); font-size:13px; line-height:1.4; }
     .progress { margin:0 0 10px; border:1px solid var(--line); border-radius:6px; overflow:hidden; height:18px; background:#f1f3f4; }
     .bar { height:100%; width:0%; background:linear-gradient(90deg, var(--accent), var(--gold)); transition:width .2s ease; }
@@ -63,7 +67,7 @@ export function mainPageStyles(): string {
     button.secondary { background:#5f6368; }
     .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 65px); }
     .results-heading { margin:20px 0 0; }
-    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { grid-template-columns:1fr; } .run-surface { min-height:auto; } .files-table th, .files-table td { padding:8px; } }
+    @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { flex-direction:column; } .run-surface { min-height:auto; } .files-table th, .files-table td { padding:8px; } }
   `;
 }
 
@@ -83,6 +87,7 @@ function browserStateScript(): string {
   return `
     const state = { uploadId: null, eventSource: null, isRunning: false, currentRunId: null, stopRequested: false };
     const activeRunStorageKey = "licenseStatusChecker.activeRunId";
+    const advancedFeaturesStorageKey = "licenseStatusChecker.advancedFeatures";
     const maxFeedLines = 500;
     const fileInput = document.getElementById("file");
     const uploadButton = document.getElementById("upload");
@@ -108,6 +113,13 @@ function browserStateScript(): string {
     const enableEmailPoll = document.getElementById("enableEmailPoll");
     const disableEmailPoll = document.getElementById("disableEmailPoll");
 
+    applyAdvancedFeatureVisibility();
+    document.addEventListener("keydown", (event) => {
+      if (!event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== "d") return;
+      event.preventDefault();
+      const enabled = document.body.classList.toggle("advanced-features");
+      localStorage.setItem(advancedFeaturesStorageKey, enabled ? "1" : "0");
+    });
     refreshEmailPollStatus();
     setInterval(refreshEmailPollStatus, 60000);
     restoreActiveRun();
@@ -162,7 +174,7 @@ function runWorkflowScript(): string {
           uploadId: state.uploadId,
           worksheet: worksheet.value,
           limit: limit.value ? Number(limit.value) : undefined,
-          checkDelaySeconds: checkDelay.value ? Number(checkDelay.value) : 0,
+          checkDelaySeconds: checkDelay.value ? Number(checkDelay.value) : 1.5,
           headed: headed.checked
         })
       });
@@ -417,6 +429,10 @@ function sharedUiScript(): string {
 
     function formatDateTime(value) {
       return value ? new Date(value).toLocaleString() : "";
+    }
+
+    function applyAdvancedFeatureVisibility() {
+      document.body.classList.toggle("advanced-features", localStorage.getItem(advancedFeaturesStorageKey) === "1");
     }
   `;
 }
