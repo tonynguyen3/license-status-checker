@@ -27,7 +27,7 @@ function pageHeader(): string {
       <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true">
       <h1>License Status Checker</h1>
     </div>
-    <div class="meta"><a href="/runs">Previous Runs</a> · <span id="status">Upload a workbook to begin.</span></div>
+    <div class="meta"><a class="header-button" href="/guide">Get Started Guide</a> <a href="/runs">Previous Runs</a> · <span id="status">Upload a workbook to begin.</span></div>
   </header>`;
 }
 

@@ -7,6 +7,7 @@ export function mainPageStyles(): string {
     h1 { font-size:28px; margin:0; font-weight:700; color:var(--accent-strong); }
     .brand { display:flex; align-items:center; gap:12px; min-width:0; }
     .brand-icon { width:48px; height:48px; border-radius:10px; object-fit:cover; border:1px solid var(--line); background:#fff; box-shadow:0 2px 8px rgba(16,35,63,.12); flex:0 0 auto; }
+    .header-button { display:inline-block; margin-right:10px; border-radius:6px; padding:8px 12px; background:var(--accent); color:#fff !important; }
     main { display:grid; grid-template-columns: 430px 1fr; min-height:calc(100vh - 73px); }
     aside { border-right:1px solid var(--line); padding:20px; background:var(--panel); }
     section { padding:20px 24px; }
@@ -68,6 +69,12 @@ export function mainPageStyles(): string {
     button.secondary { background:#5f6368; }
     .run-surface { display:flex; flex-direction:column; min-height:calc(100vh - 73px); }
     .results-heading { margin:20px 0 0; }
+    .guide-page { max-width:960px; margin:0 auto; font-size:18px; line-height:1.55; }
+    .guide-page h2 { margin:28px 0 8px; color:var(--accent-strong); font-size:26px; }
+    .guide-page p, .guide-page ul, .guide-page ol, .guide-page dl { margin:0 0 14px; }
+    .guide-page li { margin:6px 0; }
+    .guide-page dt { font-weight:700; color:var(--ink); margin-top:10px; }
+    .guide-page dd { margin:2px 0 8px; color:var(--muted); }
     @media (max-width: 760px) { main { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .inline-buttons { flex-direction:column; } .run-surface { min-height:auto; } .files-table th, .files-table td { padding:8px; } }
   `;
 }

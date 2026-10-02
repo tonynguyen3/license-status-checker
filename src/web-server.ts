@@ -6,6 +6,7 @@ import { findInputWorkbookEmail, imapConfigured } from "./imap-input.js";
 import { EmailPollScheduler } from "./web-email-poll.js";
 import { parseMultipartFile, readRequestBody, sendFile, sendHtml, sendJson, sendText } from "./web-http.js";
 import { mainPageScript, mainPageStyles } from "./web-main-page-assets.js";
+import { guideHtml } from "./web-guide-page.js";
 import { pageHtml } from "./web-pages.js";
 import { WebRunManager, writeSseEvent } from "./web-runs.js";
 import { runsHtml } from "./web-runs-page.js";
@@ -26,6 +27,11 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/") {
       sendHtml(response, pageHtml());
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/guide") {
+      sendHtml(response, guideHtml());
       return;
     }
 

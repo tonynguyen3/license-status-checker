@@ -2,6 +2,59 @@
 
 This is a TypeScript + Playwright rewrite of the Washington path from the old C# Selenium app.
 
+## Get Started Guide
+
+The License Status Checker helps process Washington trade license spreadsheets. You upload an Excel file, choose which trade type to process, and start a run. The app reads the spreadsheet, skips rows that are not ready to check, visits the Washington L&I license website for eligible licenses, and produces output files that show who should or should not be contacted.
+
+Open the web app:
+
+```text
+http://localhost:3001
+```
+
+Basic workflow:
+
+1. Click `Choose File` and select the input Excel workbook.
+2. Click `Load Excel`.
+3. In `Configure`, choose `All supported trades` or one trade type.
+4. Click `Run Check`.
+5. Watch the `Progress` panel for high-level status.
+6. When the run finishes, use `Output Files` to view or download the results.
+
+The app checks only these supported trade worksheets:
+
+- `Plumbers`
+- `Plumber Trainees`
+- `Electricians`
+
+What to expect during a run:
+
+- The app first reads the Excel workbook and counts rows.
+- It skips expired rows and rows more than 90 days away from expiration.
+- It checks eligible licenses on the Washington L&I website.
+- If Washington rate-limits the app with an HTTP `429` or F5 rejection page, the run stops and records the issue in the exception log.
+- Runs can take a while because the app pauses between license checks to be gentler on the Washington website.
+
+Output files:
+
+- `Send-{date}.xlsx`: people who appear eligible to contact.
+- `DoNotSend-{date}.xlsx`: people who should not be contacted, with a reason when available.
+- `coursesAlreadyTaken.xlsx`: course frequency summary for licenses that already show CE credits.
+- `expired.txt`: rows skipped because the spreadsheet expiration date is already expired.
+- `greaterThan90.txt`: rows skipped because the spreadsheet expiration date is more than 90 days away.
+- `exception.txt`: spreadsheet errors, browser errors, Washington rate-limit errors, and other exceptions.
+
+Email results:
+
+- Excel result files are sent as email attachments.
+- Log/text files are sent as links back to the web app.
+- Recipients are controlled by the `EMAIL_RECIPIENTS` setting in `.env`.
+- For the AnytimeCE production setup, results should be emailed to the configured AnytimeCE recipient list. Contact support if that list needs to change.
+
+Support:
+
+If you need help, email `tonynguyen3@gmail.com`.
+
 ## What It Does
 
 The CLI reads an Excel workbook of Washington license holders, checks each license on Washington L&I, and writes:
