@@ -110,6 +110,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, () => {
+  console.log("Running AutomateCE License Status Checker");
   console.log(`Web interface running at http://localhost:${port}`);
   startWebRunPurgeScheduler();
   emailPoll.startFromEnvironment();
