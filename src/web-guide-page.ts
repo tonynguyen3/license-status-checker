@@ -47,6 +47,26 @@ export function guideHtml(): string {
       <li>Runs can take a while because the app pauses between license checks to be gentler on the Washington website.</li>
     </ul>
 
+    <h2>Who Goes Into Send Or Do Not Send?</h2>
+    <p>These lists identify who qualifies for postcard outreach. Creating a Send list does not automatically send postcards.</p>
+    <p>For all trades, the Excel expiration date must be today through 90 days away. Missing or invalid data, expired rows, and rows more than 90 days away are skipped into the logs, rather than either result list. The website check excludes invalid licenses, licenses whose expiration is more than 90 days away, and licenses that are not Active. Website errors go into the exception log instead of either list.</p>
+    <dl>
+      <dt>Plumbers</dt><dd>Send when no CE credits are detected, or no courses section is present. Any detected CE credits mean Do Not Send. The recorded CE target is 16 hours.</dd>
+      <dt>Electricians</dt><dd>Send when no CE credits are detected, or no courses section is present. Any detected CE credits mean Do Not Send. The recorded CE target is 24 hours.</dd>
+      <dt>Plumber Trainees</dt><dd>Any detected CE credits mean Do Not Send, even below the recorded 8-hour target. With zero credits, the license must be active and within its effective-expiration period, and the latest affidavit must qualify as described below.</dd>
+    </dl>
+    <h2>Plumber Trainee Work Activity</h2>
+    <ul>
+      <li>The latest affidavit To Date must be within the rolling past 365 days, including exactly 365 days ago, and cannot be in the future.</li>
+      <li>Only To Date must fall between the license effective and expiration dates. From Date may be earlier than the license effective date.</li>
+      <li>Average reported work hours must be at least 20 per whole week. Hours approved are not used.</li>
+      <li>Whole weeks equal elapsed days between From Date and To Date divided by 7, rounded down. For example, 1,400 hours over 52 whole weeks is 26.92 hours/week.</li>
+      <li>The latest period is selected by To Date, then From Date. Hours from multiple employers reporting the exact same period are added together.</li>
+      <li>Missing or invalid affidavit data, a period shorter than one whole week, old reports, or an average below 20 hours/week mean Do Not Send.</li>
+    </ul>
+    <p>The output includes the decision reason and affidavit details when the affidavit check is reached. The recorded CE target is not a remaining-hours calculation: any detected CE credits exclude the person from Send.</p>
+    <p>CE totals currently use numbers detected on the website page and are not filtered by course date or renewal period. These are outreach rules, not a determination of legal renewal eligibility.</p>
+
     <h2>Output Files</h2>
     <dl>
       <dt>Send-{date}.xlsx</dt><dd>People who appear eligible to contact.</dd>

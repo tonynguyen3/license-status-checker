@@ -202,7 +202,13 @@ function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number |
     NotSendReason: tradesman.notSendReason,
     Trade: tradesman.trade,
     HoursNeeded: tradesman.hoursNeeded,
-    HoursCompleted: tradesman.hoursCompleted
+    HoursCompleted: tradesman.hoursCompleted,
+    AffidavitFromDate: tradesman.affidavitFromDate,
+    AffidavitToDate: tradesman.affidavitToDate,
+    AffidavitHoursReported: tradesman.affidavitHoursReported,
+    AffidavitWholeWeeks: tradesman.affidavitWholeWeeks,
+    AffidavitHoursPerWeek: tradesman.affidavitHoursPerWeek,
+    AffidavitDecision: tradesman.affidavitDecision
   }));
 }
 

@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import ExcelJS from "exceljs";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildOutputPaths } from "../src/paths.js";
 import { asText, readWashingtonSpreadsheet } from "../src/spreadsheet.js";
 
@@ -33,6 +33,12 @@ describe("asText", () => {
 });
 
 describe("readWashingtonSpreadsheet", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 6));
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
   function addHeader(worksheet: ExcelJS.Worksheet): void {
     worksheet.addRow([
       "License Type",

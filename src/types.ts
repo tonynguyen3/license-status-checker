@@ -14,6 +14,12 @@ export interface Tradesman {
   hoursNeeded?: number;
   hoursCompleted?: number;
   notSendReason?: string;
+  affidavitFromDate?: string;
+  affidavitToDate?: string;
+  affidavitHoursReported?: number;
+  affidavitWholeWeeks?: number;
+  affidavitHoursPerWeek?: number;
+  affidavitDecision?: string;
 }
 
 export interface CourseFrequency {

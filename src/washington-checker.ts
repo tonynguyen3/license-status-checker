@@ -5,6 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { daysUntil } from "./date-utils.js";
 import { getHoursNeeded } from "./hours.js";
 import { Logger } from "./logger.js";
+import { evaluateTraineeAffidavits, type AffidavitRow } from "./trainee-affidavits.js";
 import type { BucketedResult, CheckerOptions, CourseFrequency, OutputPaths, Tradesman } from "./types.js";
 
 interface CheckRunResult {
@@ -284,14 +285,15 @@ export class WashingtonLicenseChecker {
       tradesman.hoursNeeded = getHoursNeeded(trade);
 
       const hasCoursesSection = await timePhase(timing, "coursesCountMs", () => page.locator("#Courses").count());
-      if (hasCoursesSection === 0) {
+      if (hasCoursesSection === 0 && trade !== "Plumber Trainee") {
         timing.outcome = "success";
         timing.bucket = "send";
         timing.message = "No courses section found; send.";
         return { bucket: "send", tradesman };
       }
 
-      const numberOfCredits = await timePhase(timing, "creditsMs", () => this.sumCompletedCredits(page));
+      const numberOfCredits = hasCoursesSection === 0 ? 0
+        : await timePhase(timing, "creditsMs", () => this.sumCompletedCredits(page));
       tradesman.hoursCompleted = numberOfCredits;
       console.log(`${tradesman.licenseNumber} has completed ${tradesman.hoursCompleted} credits and needs ${tradesman.hoursNeeded}`);
 
@@ -312,6 +314,33 @@ export class WashingtonLicenseChecker {
         timing.outcome = "success";
         timing.bucket = result.bucket;
         timing.message = tradesman.notSendReason ?? "Some credits already.";
+        return result;
+      }
+
+      // CE credits remain an exclusion. Only zero-credit trainees reach the work-activity rule.
+      if (trade === "Plumber Trainee") {
+        const affidavit = await page.evaluate(`(() => {
+          const clean = value => (value || "").trim();
+          const table = document.querySelector("#AffidavitHours table");
+          const headers = Array.from(table?.querySelectorAll("thead td, thead th") || []).map(cell => clean(cell.textContent).toLowerCase());
+          const rows = Array.from(table?.querySelectorAll("tbody tr") || []).map(row => {
+            const cells = Array.from(row.querySelectorAll("td"));
+            const value = header => clean(cells[headers.indexOf(header)]?.textContent);
+            return { hoursReported: value("hours reported"), fromDate: value("from date"), toDate: value("to date") };
+          });
+          return { effective: clean(document.querySelector("#EffectiveDate")?.textContent), expiration: clean(document.querySelector("#ExpirationDate")?.textContent), rows };
+        })()`) as { effective: string; expiration: string; rows: AffidavitRow[] };
+        const decision = evaluateTraineeAffidavits(affidavit.rows, affidavit.effective, affidavit.expiration);
+        Object.assign(tradesman, {
+          affidavitFromDate: decision.fromDate, affidavitToDate: decision.toDate,
+          affidavitHoursReported: decision.hoursReported, affidavitWholeWeeks: decision.wholeWeeks,
+          affidavitHoursPerWeek: decision.hoursPerWeek, affidavitDecision: decision.reason
+        });
+        const result: BucketedResult = decision.eligible ? { bucket: "send", tradesman }
+          : this.doNotSend(tradesman, `${tradesman.licenseNumber}: ${decision.reason}`);
+        timing.outcome = "success";
+        timing.bucket = result.bucket;
+        timing.message = decision.reason;
         return result;
       }
 
