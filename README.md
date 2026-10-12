@@ -69,6 +69,8 @@ The CLI reads an Excel workbook of Washington license holders, checks each licen
 
 ## Send Vs Do Not Send Business Logic
 
+[View the Send vs Do Not Send decision flowchart](docs/business-logic-flowchart.md).
+
 These are postcard outreach rules. **Send** means the person qualifies for the
 contact list; it does not send a postcard automatically. **Do Not Send** means
 the website check excluded the person. Neither bucket is a legal determination
