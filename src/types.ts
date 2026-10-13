@@ -10,6 +10,13 @@ export interface Tradesman {
   state?: string;
   zip?: string;
   expirationDate?: string;
+  liveExpirationDate?: string;
+  licenseStatus?: string;
+  statusEvidence?: string;
+  expirationComparison?: string;
+  decisionReason?: string;
+  reportedCourses?: string;
+  ceClassification?: string;
   trade?: string;
   hoursNeeded?: number;
   hoursCompleted?: number;

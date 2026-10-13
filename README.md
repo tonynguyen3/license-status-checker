@@ -83,6 +83,11 @@ Other worksheets are ignored. Each row needs a license number in column B and
 a parseable expiration date in column I. The spreadsheet expiration must be
 between today and 90 days from today, inclusive.
 
+Both headered and headerless exports are supported. A parseable date in column I
+of the first row identifies that row as a person, so the first record is retained.
+Excel date-only cells retain their UTC calendar date to avoid shifting expiration
+back one day when the app runs in Pacific time.
+
 | Spreadsheet condition | Destination |
 | --- | --- |
 | Missing license number, missing/invalid date, or blank row | `exception.txt` |
@@ -102,42 +107,75 @@ rather than relying on the worksheet name or Excel license type.
 | Website condition | Result |
 | --- | --- |
 | License identified as invalid | Do Not Send: not a valid license |
-| Expiration more than 90 days away | Do Not Send: likely already renewed |
-| Status is anything other than `Active` | Do Not Send: not active |
-| Website/browser error or unparseable website expiration | `exception.txt`; neither bucket |
+| Live expiration later than the input Excel expiration | Do Not Send: likely renewed; both dates recorded |
+| Live expiration earlier than the input Excel expiration | Do Not Send: date discrepancy; review required |
+| Live expiration unchanged but expired or more than 90 days away | Do Not Send: outside outreach window |
+| Recognized non-active status, such as Inactive, Expired, Suspended, or Revoked | Do Not Send: exact website status recorded |
+| Status is `Superceded` or `Superseded` | Do Not Send: license likely replaced after progression from trainee/apprentice to journeyman; not an exception |
+| Website/browser error, unparseable date, or missing/unreadable CE section | `exception.txt`; neither bucket |
 | HTTP 429 or detected rate-limit rejection | `exception.txt`; stop the run |
+| Blank or unrecognized website status | `exception.txt`; capture evidence; neither bucket |
+
+The status reader waits up to 10 seconds for populated DOM text, independent of
+CSS visibility or capitalization. Blank or unrecognized status is an exception,
+never an automatic inactive classification. Output workbooks record `LicenseStatus`.
+`status-diagnostics.jsonl` records raw and rendered status reads. For non-active,
+unreadable, initially-blank-then-populated, or raw/rendered-mismatched status, `status-evidence/` captures
+a screenshot, HTML, and JSON details; `StatusEvidence` records the screenshot path.
+Status matching ignores capitalization and trailing periods. The recognized
+statuses are Active, Inactive, Expired, Suspended, Revoked, Cancelled, Canceled,
+Terminated, Closed, Not Active, Superceded, and Superseded. Progression to
+journeyman is an explanation of a superseded license, not a verified new credential.
+
+The input Excel is a manually requested L&I export and can be stale. Comparing
+calendar dates detects an advanced expiration even when it is still within 90
+days. A likely-renewed person is not contacted. An unchanged expiration proceeds
+to status and CE evaluation. Renewal detection does not assume a fixed renewal
+cycle length. `ExpirationDate` remains the input date; `LiveExpirationDate` and
+`ExpirationComparison` record the website date and comparison.
 
 For Plumber Trainees, the additional affidavit rule explicitly requires today
 to be within the live license effective-expiration period. For Plumbers and
 Electricians, the current website logic relies on `Active` status and the
-more-than-90-day check; it does not independently test the effective date.
+expiration window check; it does not independently test the effective date.
 
 ### Trade Decisions After The Shared Checks
 
 | Trade on website | Recorded CE target (`HoursNeeded`) | Send | Do Not Send |
 | --- | --- | --- | --- |
-| `Plumber` | 16 | Zero detected CE credits, or no courses section | Any detected CE credits |
-| `Electrician` | 24 | Zero detected CE credits, or no courses section | Any detected CE credits |
+| `Plumber` | 16 | Explicitly no courses, or only recognized first-aid courses | Any non-first-aid course reported |
+| `Electrician` | 24 | Explicitly no courses, or only recognized first-aid courses | Any non-first-aid course reported |
 | `Plumber Trainee` | 8 | Zero detected CE credits **and** qualifying affidavit activity below | Any detected CE credits, or failed affidavit activity rules |
 
-The CE targets are hard-coded reporting values, not minimum balances required
-to enter Send. For example, a Plumber with 4 credits is Do Not Send even though
-4 is below 16. Credits at or above the trade target produce the reason
-"has enough credits"; positive credits below it produce "has some credits already."
+The CE targets are hard-coded reporting values, not bucket thresholds.
+A Plumber with 4 first-aid credits can enter Send; a Plumber with 4 code-course
+credits enters Do Not Send. First aid plus any other CE also means Do Not Send.
 `HoursNeeded` is the full target, not target minus completed hours.
 
 ### How Completed CE Hours Are Counted
 
-The current parser finds spans anywhere on the website page containing `.00`,
-ignores text containing `$`, parses the leading number, and sums those numbers
-into `HoursCompleted`. No courses section is treated as zero credits for trainees;
-Plumbers and Electricians go directly to Send when that section is absent.
+The parser snapshots the CE section once, reading each course title, completion
+date, code, and Course Hours field. It adds all numeric hour categories, including
+fractions: `4.00 IRE,4.00 IRP` totals 8 and `1.50 NEC,0.75 RCW` totals 2.25.
+Other page numbers are ignored. An explicit "No continuing education credits
+have been reported" message confirms no courses. A missing section or incomplete
+course record is an exception, not an automatic Send decision.
 
-This parser does not filter courses by completion date or renewal period, does
-not restrict matches to course-hour fields, and can miss fractional hours or
-additional numbers in the same span. The bucket rules use this detected total.
-The `coursesAlreadyTaken.xlsx` title/code frequency report does not affect
-Send versus Do Not Send.
+First-aid recognition matches the whole-word phrase "First Aid" anywhere in the
+course title, ignoring case and accepting extra whitespace or hyphens (including
+Unicode dashes). Provider prefixes and other title wording do not affect the match;
+for example, "ASHI Basic First Aid/Adult CPR-AED" qualifies. A title containing
+both First Aid and another topic also matches this keyword rule. CPR/AED alone
+and titles without the phrase are other CE. A separate non-matching course still
+means Do Not Send, even when other courses match First Aid.
+The exception applies only to Plumbers and Electricians; trainees still cannot
+have any positive CE hours.
+
+The app uses the courses reported in the website CE section without inventing a
+renewal-period date filter. `ReportedCourses`, `CEClassification`, and
+`DecisionReason` make the decision auditable; `HoursCompleted` includes first-aid
+hours. The `coursesAlreadyTaken.xlsx` title/code frequency report does not affect
+the bucket. Its entries are recorded from the same snapshot, avoiding a second parse.
 
 ### Plumber Trainee Affidavit Activity
 
@@ -169,20 +207,71 @@ Assuming the spreadsheet and shared live checks pass:
 | Trade and evidence | Result |
 | --- | --- |
 | Plumber, 0 CE credits | Send |
-| Plumber, 4 CE credits | Do Not Send: some credits already |
-| Electrician, 24 CE credits | Do Not Send: enough credits |
+| Plumber, 4 first-aid credits only | Send: first aid only |
+| Plumber, 4 code-course credits | Do Not Send: non-first-aid CE reported |
+| Electrician, first aid plus a code course | Do Not Send: non-first-aid CE reported |
+| Any trade, live expiration advanced compared with Excel | Do Not Send: likely renewed |
 | Plumber Trainee, 1 CE credit and recent high-hour affidavit | Do Not Send: CE credits take precedence |
 | Plumber Trainee, 0 CE credits, qualifying To Date, 1,400 hours / 52 weeks | Send: 26.92 hours/week |
 | Plumber Trainee, 0 CE credits, latest To Date 366 days ago | Do Not Send: affidavit too old |
 | Plumber Trainee, 0 CE credits, 500 hours / 52 weeks | Do Not Send: below 20 hours/week |
+
+The current checking window remains today through 90 days away. Ben's described
+2-6-week postcard mailing window is not enforced by the checker.
 
 `NotSendReason` explains exclusions in the Do Not Send workbook. Affidavit
 columns are populated only when a zero-credit trainee reaches that check;
 they remain blank when an earlier condition already determines the outcome.
 
 Implementation: `src/spreadsheet.ts` (input filters), `src/washington-checker.ts`
-(live checks and CE decisions), `src/hours.ts` (CE targets), and
+(live checks), `src/continuing-education.ts` (course parsing and decisions), `src/hours.ts` (CE targets), and
 `src/trainee-affidavits.ts` (trainee activity calculation).
+
+### Recent Outreach Enhancements
+
+- Read headered and headerless L&I exports without dropping the first person.
+- Preserve Excel calendar dates without the Pacific-time one-day shift.
+- Detect likely renewal by comparing the live expiration with the input date.
+- Parse course titles, codes, completion dates, and all hour categories in one snapshot.
+- Allow Plumbers/Electricians with only titles containing First Aid to enter Send.
+- Wait for populated status and separate unreadable status from genuine non-active licenses.
+- Recognize Superceded/Superseded as Do Not Send with a likely-progression explanation.
+- Include dates, status, course classifications, decisions, and evidence paths in reports.
+
+The Plumber Trainee zero-credit, rolling-365-day affidavit, and 20-hours-per-whole-week
+rules remain in effect. The checking window remains today through 90 days away.
+
+### Comparing Decisions And Capturing Evidence
+
+The comparison tools create separate outputs and do not email results or modify
+previous runs. Generated workbooks, captured pages, screenshots, and personal
+run data in `outputs/` and `Files/comparison-*/` are excluded from Git.
+
+For a live sample of at most 35 eligible people (using one fetched page for both
+the previous and new bucket rules):
+
+```bash
+npx tsx scripts/live-outreach-comparison.ts --input "/path/to/input.xlsx" --worksheet Plumbers --limit 30 --check-delay-ms 5000 --out-dir Files/comparison-sample
+```
+
+The sample has a hard cap of 35 main-page navigations, stops on detected rate
+limiting or three consecutive website errors, and writes `comparison.json`,
+per-record results, baseline/new workbooks, and page HTML. Page assets are separate
+HTTP requests; the cap is not a limit on every image, script, or stylesheet request.
+The baseline reproduces the previous bucket decisions on the same page data,
+not a second live run or historical results from a different date.
+
+To replay captured sample pages with all external traffic blocked:
+
+```bash
+npx tsx scripts/compare-outreach.ts --input "/path/to/input.xlsx" --worksheet Plumbers --out-dir Files/comparison-replay --replay-from Files/comparison-sample
+```
+
+`scripts/recheck-status.ts` rechecks the four initial status-error examples,
+captures every page as PNG/HTML, and writes `recheck.json`. Routine web runs
+automatically capture problematic status evidence inside their output folder;
+those diagnostic files are currently accessed from the folder, not listed in
+the web output table. Original output files remain unchanged until a new run.
 
 ## Input And Output Files
 
@@ -236,7 +325,7 @@ Spreadsheet rows are filtered before the app opens the Washington website:
 
 Generated output files are written to the output directory. By default, that is also `Files/`. You can change it with `--out-dir`.
 
-- `Send-{date}.xlsx`: license holders who appear active, near renewal, and have no completed CE credits. Plumber Trainees must also pass the affidavit activity rules above.
+- `Send-{date}.xlsx`: active license holders near renewal whose expiration has not changed. Plumbers and Electricians can have only first-aid courses or no courses. Plumber Trainees must have zero CE credits and pass the affidavit activity rules above.
 - `DoNotSend-{date}.xlsx`: license holders who should not be contacted, with a reason when available.
 - `coursesAlreadyTaken.xlsx`: course title/code frequency report from licenses that already show completed CE credits.
 - `expired.txt`: spreadsheet rows skipped before browser checks because the input expiration date is already past.

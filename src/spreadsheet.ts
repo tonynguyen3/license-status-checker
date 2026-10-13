@@ -16,7 +16,8 @@ interface ReadSpreadsheetOptions {
 
 export function asText(value: CellValue): string | undefined {
   if (value === undefined || value === null) return undefined;
-  if (value instanceof Date) return value.toLocaleDateString();
+  // Excel date-only cells are UTC midnight. Local formatting shifts them to yesterday in Pacific time.
+  if (value instanceof Date) return `${value.getUTCMonth() + 1}/${value.getUTCDate()}/${value.getUTCFullYear()}`;
   if (typeof value === "object" && "text" in value) return String(value.text).trim();
   if (typeof value === "object" && "result" in value) return asText(value.result);
   const text = String(value).trim();
@@ -41,7 +42,9 @@ export async function readWashingtonSpreadsheet(
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(inputPath);
   const worksheets = selectWorksheets(workbook, options.worksheetName);
-  const rowTotal = worksheets.reduce((total, worksheet) => total + Math.max(0, worksheet.rowCount - 1), 0);
+  const dataStart = (worksheet: ExcelJS.Worksheet) => parseDate(asText(worksheet.getRow(1).getCell(9).value)) ? 1 : 2;
+  const dataCount = (worksheet: ExcelJS.Worksheet) => Math.max(0, worksheet.rowCount - dataStart(worksheet) + 1);
+  const rowTotal = worksheets.reduce((total, worksheet) => total + dataCount(worksheet), 0);
   const tradesmen: Tradesman[] = [];
   let errorCount = 0;
   let rowsRead = 0;
@@ -60,7 +63,7 @@ export async function readWashingtonSpreadsheet(
   for (const worksheet of worksheets) {
     options.onProgress?.({
       type: "worksheet_started",
-      message: `Reading worksheet "${worksheet.name}" (${Math.max(0, worksheet.rowCount - 1)} data row(s)).`,
+      message: `Reading worksheet "${worksheet.name}" (${dataCount(worksheet)} data row(s)).`,
       current: rowsRead,
       total: rowTotal,
       remaining: Math.max(0, rowTotal - rowsRead)
@@ -69,7 +72,8 @@ export async function readWashingtonSpreadsheet(
     const worksheetStartEligible = eligibleCount;
     const worksheetStartErrors = errorCount;
 
-    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+    // Ad-hoc L&I exports can omit headers; a date in column I identifies a data first row.
+    for (let rowNumber = dataStart(worksheet); rowNumber <= worksheet.rowCount; rowNumber++) {
       rowsRead++;
       if (rowsRead === 1 || rowsRead === rowTotal || rowsRead % 100 === 0) {
         options.onProgress?.({
@@ -199,6 +203,13 @@ function tradesmanRows(tradesmen: Tradesman[]): Record<string, string | number |
     State: tradesman.state,
     Zip: tradesman.zip,
     ExpirationDate: tradesman.expirationDate,
+    LiveExpirationDate: tradesman.liveExpirationDate,
+    LicenseStatus: tradesman.licenseStatus,
+    StatusEvidence: tradesman.statusEvidence,
+    ExpirationComparison: tradesman.expirationComparison,
+    DecisionReason: tradesman.decisionReason,
+    ReportedCourses: tradesman.reportedCourses,
+    CEClassification: tradesman.ceClassification,
     NotSendReason: tradesman.notSendReason,
     Trade: tradesman.trade,
     HoursNeeded: tradesman.hoursNeeded,

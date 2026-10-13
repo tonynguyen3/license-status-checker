@@ -1,10 +1,11 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { chromium, type Browser, type Page } from "playwright";
 import { daysUntil } from "./date-utils.js";
 import { getHoursNeeded } from "./hours.js";
 import { Logger } from "./logger.js";
+import { parseReportedCourses, courseExclusionReason, type CourseListRow } from "./continuing-education.js";
 import { evaluateTraineeAffidavits, type AffidavitRow } from "./trainee-affidavits.js";
 import type { BucketedResult, CheckerOptions, CourseFrequency, OutputPaths, Tradesman } from "./types.js";
 
@@ -41,12 +42,6 @@ interface LicenseTiming {
   slowestPhaseMs: number;
   hiccup: string;
   message: string;
-}
-
-interface CourseListRow {
-  className: string;
-  label: string;
-  value: string;
 }
 
 const TIMING_HICCUP_TOTAL_MS = 10_000;
@@ -254,7 +249,7 @@ export class WashingtonLicenseChecker {
       await timePhase(timing, "rateLimitProbeMs", () => this.throwIfRateLimitPage(page, tradesman));
 
       const expiration = await timePhase(timing, "expirationMs", () => this.checkExpirationDate(page));
-      if (expiration.days === -1) {
+      if (expiration.invalid) {
         const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} is not a valid license.`);
         timing.outcome = "success";
         timing.bucket = result.bucket;
@@ -262,62 +257,81 @@ export class WashingtonLicenseChecker {
         return result;
       }
 
-      if (expiration.days > 90) {
-        tradesman.expirationDate = expiration.date.toLocaleDateString();
-        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} has likely already renewed.`);
+      tradesman.liveExpirationDate = expiration.date.toLocaleDateString();
+      const inputExpiration = new Date(tradesman.expirationDate ?? "");
+      if (Number.isNaN(inputExpiration.getTime())) throw new Error("Input expiration date is missing or invalid.");
+      const dateChange = daysUntil(expiration.date, inputExpiration);
+      tradesman.expirationComparison = dateChange > 0 ? "Advanced" : dateChange < 0 ? "Earlier" : "Unchanged";
+      // The manually produced input can be stale. Any advanced expiration excludes outreach.
+      if (dateChange !== 0 || expiration.days > 90 || expiration.days < 0) {
+        const reason = dateChange > 0
+          ? `Likely renewed: expiration advanced from ${tradesman.expirationDate} to ${tradesman.liveExpirationDate}.`
+          : dateChange < 0 ? `Live expiration ${tradesman.liveExpirationDate} is earlier than input ${tradesman.expirationDate}; review required.`
+          : expiration.days < 0 ? "Live license expiration is in the past."
+          : "Live expiration is more than 90 days away.";
+        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber}: ${reason}`);
         timing.outcome = "success";
         timing.bucket = result.bucket;
         timing.message = tradesman.notSendReason ?? "Likely renewed.";
         return result;
       }
 
-      const status = await timePhase(timing, "statusMs", () => page.locator("#StatusDescription strong").innerText({ timeout: 10_000 }));
-      if (status.trim() !== "Active") {
-        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber} is not active.`);
+      const status = await timePhase(timing, "statusMs", () => this.readLicenseStatus(page, tradesman));
+      if (status !== "active") {
+        // L&I may spell superseded as "Superceded". The old license was likely
+        // replaced after progression from trainee/apprentice to journeyman.
+        const superseded = status === "superceded" || status === "superseded";
+        const reason = superseded
+          ? `${tradesman.licenseNumber}: website status ${tradesman.licenseStatus}; license likely replaced after progression from trainee/apprentice to journeyman.`
+          : `${tradesman.licenseNumber} is not active (website status: ${tradesman.licenseStatus}).`;
+        const result = this.doNotSend(tradesman, reason);
         timing.outcome = "success";
         timing.bucket = result.bucket;
         timing.message = tradesman.notSendReason ?? "Not active.";
         return result;
       }
 
-      const trade = (await timePhase(timing, "tradeMs", () => page.locator("#LicenseType").innerText({ timeout: 10_000 }))).trim();
+      await page.waitForFunction('document.querySelector("#LicenseType")?.textContent?.trim()', undefined, { timeout: 10_000 });
+      const trade = (await timePhase(timing, "tradeMs", () => page.locator("#LicenseType").textContent({ timeout: 10_000 })))?.trim() ?? "";
       tradesman.trade = trade;
       tradesman.hoursNeeded = getHoursNeeded(trade);
 
-      const hasCoursesSection = await timePhase(timing, "coursesCountMs", () => page.locator("#Courses").count());
-      if (hasCoursesSection === 0 && trade !== "Plumber Trainee") {
-        timing.outcome = "success";
-        timing.bucket = "send";
-        timing.message = "No courses section found; send.";
-        return { bucket: "send", tradesman };
-      }
-
-      const numberOfCredits = hasCoursesSection === 0 ? 0
-        : await timePhase(timing, "creditsMs", () => this.sumCompletedCredits(page));
+      const courseSnapshot = await timePhase(timing, "creditsMs", () => page.evaluate(`(() => {
+        const section = document.querySelector("#Courses");
+        const clean = value => (value || "").replace(/\\s+/g, " ").trim();
+        // A single row can contain both Completed and Course code; read every label.
+        return { text: clean(section?.textContent), rows: Array.from(section?.querySelectorAll("#coursesList label") || []).map(label => {
+          let sibling = label.nextElementSibling;
+          let value = "";
+          while (sibling && sibling.tagName !== "LABEL") {
+            const span = sibling.matches("span") ? sibling : sibling.querySelector("span");
+            if (span) { value = clean(span.textContent); break; }
+            sibling = sibling.nextElementSibling;
+          }
+          return { label: clean(label.textContent), value };
+        }) };
+      })()`)) as { text: string; rows: CourseListRow[] };
+      const courses = parseReportedCourses(courseSnapshot.rows, courseSnapshot.text);
+      const numberOfCredits = courses.reduce((sum, course) => sum + course.hours, 0);
       tradesman.hoursCompleted = numberOfCredits;
+      tradesman.reportedCourses = courses.map(course => `${course.title} [${course.code || "no code"}; ${course.completed}; ${course.hours} hours]`).join(" | ");
+      tradesman.ceClassification = !courses.length ? "No courses reported"
+        : courses.every(course => course.firstAidOnly) ? "First aid only" : "Other CE reported";
       console.log(`${tradesman.licenseNumber} has completed ${tradesman.hoursCompleted} credits and needs ${tradesman.hoursNeeded}`);
 
-      if (numberOfCredits > 0) {
-        await timePhase(timing, "courseFrequencyMs", () => this.recordCourseFrequencies(page));
+      for (const course of courses) {
+        if (course.code) this.recordCourseFrequency(course.title, course.code);
       }
-
-      if ((tradesman.hoursNeeded ?? 0) <= numberOfCredits) {
-        const result = this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has enough credits.`);
-        timing.outcome = "success";
-        timing.bucket = result.bucket;
-        timing.message = tradesman.notSendReason ?? "Enough credits.";
-        return result;
-      }
-
-      if (numberOfCredits > 0) {
-        const result = this.doNotSend(tradesman, ` | ${tradesman.licenseNumber} has some credits already.`);
+      const exclusion = courseExclusionReason(trade, courses);
+      if (exclusion) {
+        const result = this.doNotSend(tradesman, `${tradesman.licenseNumber}: ${exclusion}`);
         timing.outcome = "success";
         timing.bucket = result.bucket;
         timing.message = tradesman.notSendReason ?? "Some credits already.";
         return result;
       }
 
-      // CE credits remain an exclusion. Only zero-credit trainees reach the work-activity rule.
+      // The first-aid exception is only for Plumbers and Electricians, not trainees.
       if (trade === "Plumber Trainee") {
         const affidavit = await page.evaluate(`(() => {
           const clean = value => (value || "").trim();
@@ -338,6 +352,7 @@ export class WashingtonLicenseChecker {
         });
         const result: BucketedResult = decision.eligible ? { bucket: "send", tradesman }
           : this.doNotSend(tradesman, `${tradesman.licenseNumber}: ${decision.reason}`);
+        tradesman.decisionReason = decision.reason;
         timing.outcome = "success";
         timing.bucket = result.bucket;
         timing.message = decision.reason;
@@ -346,7 +361,8 @@ export class WashingtonLicenseChecker {
 
       timing.outcome = "success";
       timing.bucket = "send";
-      timing.message = "No completed credits; send.";
+      tradesman.decisionReason = courses.length ? "Only first-aid courses reported; send." : "No CE courses reported; send.";
+      timing.message = tradesman.decisionReason;
       return { bucket: "send", tradesman };
     } catch (error) {
       timing.outcome = error instanceof WashingtonRateLimitError ? "rate_limited" : "error";
@@ -372,6 +388,50 @@ export class WashingtonLicenseChecker {
   private async writeTiming(timing: LicenseTiming): Promise<void> {
     await mkdir(dirname(this.outputPaths.timingLogPath), { recursive: true });
     await appendFile(this.outputPaths.timingLogPath, `${timingLine(timing)}\n`, "utf8");
+  }
+
+  private async readLicenseStatus(page: Page, tradesman: Tradesman): Promise<string> {
+    const snapshot = () => page.evaluate(`(() => {
+      const element = document.querySelector("#StatusDescription strong");
+      return { raw: element?.textContent?.trim() || "", rendered: element?.innerText?.trim() || "",
+        description: document.querySelector("#StatusDescription")?.textContent?.trim() || "", readyState: document.readyState };
+    })()`) as Promise<{ raw: string; rendered: string; description: string; readyState: string }>;
+    const initial = await snapshot();
+    try {
+      // Element attachment/load events do not guarantee populated data. Read DOM text
+      // instead of rendered text, which can be altered by CSS or collapsed sections.
+      await page.waitForFunction('document.querySelector("#StatusDescription strong")?.textContent?.trim()', undefined, { timeout: 10_000 });
+    } catch {
+      await this.captureStatusEvidence(page, tradesman, { initial, final: await snapshot(), error: "Status stayed blank for 10 seconds." });
+      throw new Error(`License ${tradesman.licenseNumber}: website status stayed blank or missing; not classified as inactive. Evidence: ${tradesman.statusEvidence}`);
+    }
+    const final = await snapshot();
+    tradesman.licenseStatus = final.raw;
+    const normalized = final.raw.toLowerCase().replace(/[.\s]+$/g, "").replace(/\s+/g, " ");
+    const recognized = ["active", "inactive", "expired", "suspended", "revoked", "cancelled", "canceled", "terminated", "closed", "not active", "superceded", "superseded"];
+    const needsScreenshot = normalized !== "active" || initial.raw !== final.raw || final.rendered !== final.raw;
+    if (needsScreenshot) {
+      await this.captureStatusEvidence(page, tradesman, { initial, final, normalized });
+    } else {
+      await appendFile(join(dirname(this.outputPaths.timingLogPath), "status-diagnostics.jsonl"), `${JSON.stringify({ license: tradesman.licenseNumber, url: page.url(), timestamp: new Date().toISOString(), initial, final, normalized })}\n`);
+    }
+    if (!recognized.includes(normalized)) {
+      throw new Error(`License ${tradesman.licenseNumber}: unrecognized website status ${JSON.stringify(final.raw)}; review required. Evidence: ${tradesman.statusEvidence}`);
+    }
+    return normalized;
+  }
+
+  private async captureStatusEvidence(page: Page, tradesman: Tradesman, details: unknown): Promise<void> {
+    const directory = join(dirname(this.outputPaths.timingLogPath), "status-evidence");
+    await mkdir(directory, { recursive: true });
+    const stem = join(directory, encodeURIComponent(tradesman.licenseNumber).replace(/\*/g, "%2A"));
+    tradesman.statusEvidence = `${stem}.png`;
+    const errors: string[] = [];
+    try { await page.screenshot({ path: `${stem}.png`, fullPage: true, timeout: 10_000 }); }
+    catch (error) { errors.push(`Screenshot failed: ${String(error)}`); }
+    try { await writeFile(`${stem}.html`, await page.content()); }
+    catch (error) { errors.push(`HTML capture failed: ${String(error)}`); }
+    await writeFile(`${stem}.json`, JSON.stringify({ license: tradesman.licenseNumber, url: page.url(), timestamp: new Date().toISOString(), details, errors }, null, 2));
   }
 
   private async pauseBetweenChecks(): Promise<void> {
@@ -408,9 +468,9 @@ export class WashingtonLicenseChecker {
     }
   }
 
-  private async checkExpirationDate(page: Page): Promise<{ days: number; date: Date }> {
+  private async checkExpirationDate(page: Page): Promise<{ days: number; date: Date; invalid?: boolean }> {
     if (page.url() === "https://secure.lni.wa.gov/verify/default.aspx#ErrorMsg") {
-      return { days: -1, date: new Date(0) };
+      return { days: -1, date: new Date(0), invalid: true };
     }
 
     const expirationElement = page.locator("#ExpirationDate");
@@ -431,69 +491,6 @@ export class WashingtonLicenseChecker {
     return { days: daysUntil(expirationDate), date: expirationDate };
   }
 
-  private async sumCompletedCredits(page: Page): Promise<number> {
-    const potentialCredits = page.locator("xpath=//span[contains(text(),'.00')]");
-    const count = await potentialCredits.count();
-    let total = 0;
-
-    for (let i = 0; i < count; i++) {
-      let text = (await potentialCredits.nth(i).innerText()).trim();
-      if (text.includes("$")) continue;
-
-      const firstSpace = text.indexOf(" ");
-      if (firstSpace > 0) {
-        text = text.slice(0, firstSpace);
-      }
-
-      const parsed = Number.parseFloat(text);
-      if (!Number.isNaN(parsed)) {
-        total += parsed;
-      }
-    }
-
-    return total;
-  }
-
-  private async recordCourseFrequencies(page: Page): Promise<void> {
-    const rows = await page.evaluate(`(() => {
-      const list = document.querySelector("#coursesList");
-      if (!list) return [];
-      const clean = (value) => (value || "").replace(/\\s+/g, " ").trim();
-
-      return Array.from(list.children).map((row) => ({
-        className: String(row.className || ""),
-        label: clean(row.querySelector("label")?.textContent),
-        value: clean(row.querySelector("span")?.textContent)
-      }));
-    })()`) as CourseListRow[];
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-
-      // Washington inserts Course Hours rows and blank spacer rows between course entries.
-      // Those rows are expected page structure, so skip them synchronously instead of
-      // asking Playwright locators to wait for labels or siblings that will never exist.
-      if (row.label !== "Course title" || !row.value) continue;
-
-      let courseCode = "";
-      for (let j = i + 1; j < rows.length; j++) {
-        const nearby = rows[j];
-
-        // The next Course title means this entry had no usable Course code. Stop looking
-        // for this course and let the outer loop handle the next title row.
-        if (nearby.label === "Course title") break;
-
-        if (nearby.label === "Course code") {
-          courseCode = nearby.value;
-          break;
-        }
-      }
-
-      if (!courseCode) continue;
-      this.recordCourseFrequency(row.value, courseCode);
-    }
-  }
-
   private recordCourseFrequency(courseName: string, courseCode: string): void {
     const key = `${courseName}\u0000${courseCode}`;
     const existing = this.courseCounts.get(key);
@@ -508,6 +505,7 @@ export class WashingtonLicenseChecker {
   private doNotSend(tradesman: Tradesman, reason: string): BucketedResult {
     console.log(reason);
     tradesman.notSendReason = reason;
+    tradesman.decisionReason = reason;
     return { bucket: "doNotSend", tradesman };
   }
 }

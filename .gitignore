@@ -4,6 +4,8 @@ node_modules/
 dist/
 Files/ListToCheck.xlsx
 Files/web-runs/
+Files/comparison-*/
+outputs/
 Files/~$*.xlsx
 Files/Send-*.xlsx
 Files/DoNotSend-*.xlsx

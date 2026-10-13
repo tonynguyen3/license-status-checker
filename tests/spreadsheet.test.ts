@@ -29,6 +29,7 @@ describe("asText", () => {
   it("normalizes blank and date cell values", () => {
     expect(asText("  ")).toBeUndefined();
     expect(asText(new Date(2026, 6, 6))).toBe("7/6/2026");
+    expect(asText(new Date("2026-10-13T00:00:00.000Z"))).toBe("10/13/2026");
   });
 });
 
@@ -38,6 +39,16 @@ describe("readWashingtonSpreadsheet", () => {
     vi.setSystemTime(new Date(2026, 6, 6));
   });
   afterEach(() => { vi.useRealTimers(); });
+
+  it("includes the first person in a headerless L&I export and preserves the Excel calendar date", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "license-headerless-"));
+    const input = join(dir, "input.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    workbook.addWorksheet("Plumbers").addRow(["PL", "FIRST", "First Person", "", "", "", "", "", new Date("2026-07-20T00:00:00Z")]);
+    await workbook.xlsx.writeFile(input);
+    const people = await readWashingtonSpreadsheet(input, new TestLogger(), buildOutputPaths(dir));
+    expect(people).toEqual([expect.objectContaining({ licenseNumber: "FIRST", expirationDate: "7/20/2026" })]);
+  });
 
   function addHeader(worksheet: ExcelJS.Worksheet): void {
     worksheet.addRow([

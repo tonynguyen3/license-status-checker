@@ -49,13 +49,15 @@ export function guideHtml(): string {
 
     <h2>Who Goes Into Send Or Do Not Send?</h2>
     <p>These lists identify who qualifies for postcard outreach. Creating a Send list does not automatically send postcards.</p>
-    <p>For all trades, the Excel expiration date must be today through 90 days away. Missing or invalid data, expired rows, and rows more than 90 days away are skipped into the logs, rather than either result list. The website check excludes invalid licenses, licenses whose expiration is more than 90 days away, and licenses that are not Active. Website errors go into the exception log instead of either list.</p>
+    <p>For all trades, the Excel expiration date must be today through 90 days away. Missing or invalid data, expired rows, and rows more than 90 days away are skipped into the logs, rather than either result list. The manually produced Excel can be stale: if the website expiration is later than the Excel date, the person likely renewed and goes into Do Not Send. Earlier website dates also mean Do Not Send with a review reason. Both dates are recorded. Invalid, expired, distant-expiration, and non-Active licenses are excluded. Website errors and unreadable CE data go into the exception log instead of either list.</p>
     <dl>
-      <dt>Plumbers</dt><dd>Send when no CE credits are detected, or no courses section is present. Any detected CE credits mean Do Not Send. The recorded CE target is 16 hours.</dd>
-      <dt>Electricians</dt><dd>Send when no CE credits are detected, or no courses section is present. Any detected CE credits mean Do Not Send. The recorded CE target is 24 hours.</dd>
+      <dt>Plumbers</dt><dd>Send when the website explicitly reports no CE courses, or only recognized first-aid courses. Any other CE course means Do Not Send, including first aid mixed with other courses. The recorded CE target is 16 hours.</dd>
+      <dt>Electricians</dt><dd>Send when the website explicitly reports no CE courses, or only recognized first-aid courses. Any other CE course means Do Not Send, including first aid mixed with other courses. The recorded CE target is 24 hours.</dd>
       <dt>Plumber Trainees</dt><dd>Any detected CE credits mean Do Not Send, even below the recorded 8-hour target. With zero credits, the license must be active and within its effective-expiration period, and the latest affidavit must qualify as described below.</dd>
     </dl>
     <h2>Plumber Trainee Work Activity</h2>
+    <p>A website status of Superceded or Superseded means Do Not Send, not an error. The license was likely replaced after progression from trainee/apprentice to journeyman; this explanation is recorded with the exact website status.</p>
+    <p>The app waits for populated license status. Blank or unknown status goes into the exception log instead of being labeled inactive. The result files record the exact status; screenshots and diagnostic files are saved in the run folder when status needs investigation.</p>
     <ul>
       <li>The latest affidavit To Date must be within the rolling past 365 days, including exactly 365 days ago, and cannot be in the future.</li>
       <li>Only To Date must fall between the license effective and expiration dates. From Date may be earlier than the license effective date.</li>
@@ -64,8 +66,8 @@ export function guideHtml(): string {
       <li>The latest period is selected by To Date, then From Date. Hours from multiple employers reporting the exact same period are added together.</li>
       <li>Missing or invalid affidavit data, a period shorter than one whole week, old reports, or an average below 20 hours/week mean Do Not Send.</li>
     </ul>
-    <p>The output includes the decision reason and affidavit details when the affidavit check is reached. The recorded CE target is not a remaining-hours calculation: any detected CE credits exclude the person from Send.</p>
-    <p>CE totals currently use numbers detected on the website page and are not filtered by course date or renewal period. These are outreach rules, not a determination of legal renewal eligibility.</p>
+    <p>The output includes expiration comparisons, course details, CE classification, and the decision reason. Affidavit details are included when the trainee check is reached. CE targets are reporting values, not bucket thresholds.</p>
+    <p>Any course title containing the phrase First Aid qualifies for the first-aid exception, regardless of provider names or other wording. Matching ignores capitalization and accepts extra spaces or hyphens. For example, ASHI Basic First Aid/Adult CPR-AED qualifies. CPR/AED alone and titles without First Aid are other CE. A separate other-CE course still excludes the person. Hours are summed only from each reported course's hours field; course dates are recorded without an additional renewal-period filter. These are outreach rules, not a determination of legal renewal eligibility.</p>
 
     <h2>Output Files</h2>
     <dl>

@@ -20,18 +20,29 @@ flowchart TD
     F -- No --> ERR["Exception log<br/>Rate limits also stop the run"]
     F -- Yes --> G{"License identified as invalid?"}
     G -- Yes --> NO["DO NOT SEND"]
-    G -- No --> H{"Live expiration<br/>more than 90 days away?"}
+    G -- No --> R{"Live expiration later<br/>than input Excel date?"}
+    R -- Yes --> REN["DO NOT SEND<br/>Likely renewed; record both dates"]
+    R -- No --> S{"Live expiration earlier<br/>than input Excel date?"}
+    S -- Yes --> REV["DO NOT SEND<br/>Date discrepancy; review required"]
+    S -- No --> H{"Live expiration expired<br/>or more than 90 days away?"}
     H -- Yes --> NO
-    H -- No --> I{"Status is Active?"}
+    H -- No --> WAIT["Wait up to 10 seconds for status DOM text<br/>Normalize case and trailing punctuation"]
+    WAIT --> READ{"Status populated<br/>and recognized?"}
+    READ -- No --> SE["Capture screenshot, HTML, and diagnostics<br/>Exception log; neither bucket"]
+    READ -- Yes --> SUPER{"Superceded or Superseded?"}
+    SUPER -- Yes --> LEVEL["DO NOT SEND<br/>Likely replaced after trainee/apprentice<br/>progression to journeyman; capture evidence"]
+    SUPER -- No --> I{"Status is Active?"}
     I -- No --> NO
-    I -- Yes --> J{"Trade type?"}
+    I -- Yes --> CE{"CE section readable?<br/>Courses or explicit no-credits message?"}
+    CE -- No --> ERR
+    CE -- Yes --> J{"Trade type?"}
 
-    J -- Electrician --> EL{"Any detected CE credits?<br/>Recorded target: 24"}
-    J -- Plumber --> PL{"Any detected CE credits?<br/>Recorded target: 16"}
+    J -- Electrician --> EL{"Any non-first-aid<br/>courses reported?"}
+    J -- Plumber --> PL{"Any non-first-aid<br/>courses reported?"}
     EL -- Yes --> NO
     PL -- Yes --> NO
-    EL -- "No / no courses section" --> SEND["SEND"]
-    PL -- "No / no courses section" --> SEND
+    EL -- "No / first aid only" --> SEND["SEND"]
+    PL -- "No / first aid only" --> SEND
 
     J -- "Plumber Trainee" --> PT{"Any detected CE credits?<br/>Recorded target: 8"}
     PT -- Yes --> NO
@@ -55,8 +66,18 @@ license effective date. Multiple employers reporting the exact same latest
 From/To period have their reported hours added together. Hours approved are
 not used. Any detected CE credits take precedence over affidavit activity.
 
-The CE targets distinguish "some credits already" from "enough credits" in
-Do Not Send; they do not allow people with partial credits into Send.
+CE targets are reporting values, not bucket thresholds. The first-aid exception
+applies only to Plumbers and Electricians. Any title containing the whole-word
+phrase First Aid matches, ignoring case and accepting whitespace or hyphens;
+provider names and other title wording do not prevent a match. A separate course
+without that phrase counts as other CE. Incomplete course data goes into the exception log.
 
 Implementation details and limitations, including the CE parser and live
 expiration handling, are described in the linked README section.
+
+Non-active status is recorded verbatim in `LicenseStatus` and the exclusion
+reason. Blank or unrecognized text is not evidence of inactivity. The reader
+uses DOM text rather than rendered text so loading delays, collapsed sections,
+or CSS formatting do not turn Active into a false Do Not Send decision.
+Evidence is also captured when the initial status is blank but later resolves,
+or rendered status differs from the final DOM text.
