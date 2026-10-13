@@ -3,7 +3,7 @@ export function getHoursNeeded(trade: string): number {
     case "Plumber Trainee":
       return 8;
     case "Plumber":
-      return 16;
+      return 24;
     case "Electrician":
       return 24;
     default:

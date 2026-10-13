@@ -143,7 +143,7 @@ expiration window check; it does not independently test the effective date.
 
 | Trade on website | Recorded CE target (`HoursNeeded`) | Send | Do Not Send |
 | --- | --- | --- | --- |
-| `Plumber` | 16 | Explicitly no courses, or only recognized first-aid courses | Any non-first-aid course reported |
+| `Plumber` | 24 | Explicitly no courses, or only recognized first-aid courses | Any non-first-aid course reported |
 | `Electrician` | 24 | Explicitly no courses, or only recognized first-aid courses | Any non-first-aid course reported |
 | `Plumber Trainee` | 8 | Zero detected CE credits **and** qualifying affidavit activity below | Any detected CE credits, or failed affidavit activity rules |
 
